@@ -32,7 +32,7 @@
     <div id="root">
         <div class="loading-screen">
             <div style="border: 3px solid #f3f3f3; border-top: 3px solid #0d9488; border-radius: 50%; width: 40px; height: 40px; animation: spin 1s linear infinite;"></div>
-            <p style="color: #64748b; font-size: 14px; font-weight: 600;">Initialisation sécurisée...</p>
+            <p style="color: #64748b; font-size: 14px; font-weight: 600;">Connexion au Cloud...</p>
         </div>
     </div>
 
@@ -40,7 +40,7 @@
         const { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, PieChart, Pie, Cell, LabelList } = window.Recharts;
         const { useState, useMemo, useEffect } = React;
 
-        // --- VOTRE CONFIGURATION FIREBASE PERSONNELLE ---
+        // --- CONFIGURATION FIREBASE ---
         const firebaseConfig = {
             apiKey: "AIzaSyDV_kmvQC6yAtA95efs33S17SiYopp0r2c",
             authDomain: "ak-minstep-consult-tracker.firebaseapp.com",
@@ -50,13 +50,15 @@
             appId: "1:1076236018116:web:6999f5de95bb0ba0528491"
         };
 
-        // Identifiant unique pour vos données
-        const appId = 'ivana-studio-tracker';
+        // Identifiant de l'application
+        const currentAppId = 'ivana-studio-tracker';
 
-        // Initialisation de Firebase
+        // Initialisation sécurisée
         if (!firebase.apps.length) {
             firebase.initializeApp(firebaseConfig);
         }
+        const db = firebase.firestore();
+        const auth = firebase.auth();
 
         const Icon = ({ name, size = 18, className = "" }) => {
             useEffect(() => { if (window.lucide) window.lucide.createIcons(); }, [name]);
@@ -96,36 +98,33 @@
                 price: '', expenses: '', hours: '', isPaid: false, isCancelled: false, paymentMethod: "Virement", notes: ''
             });
 
-            // 1. Authentification Automatique
+            // 1. Authentification
             useEffect(() => {
-                const auth = firebase.auth();
-                const initAuth = async () => {
-                    try {
-                        // On utilise une connexion anonyme pour que vous n'ayez pas à vous loguer, 
-                        // mais les données resteront liées à votre appareil/navigateur.
-                        await auth.signInAnonymously();
-                    } catch (err) {
-                        console.error("Auth error:", err);
+                const unsubAuth = auth.onAuthStateChanged(async (user) => {
+                    if (user) {
+                        setUser(user);
+                    } else {
+                        try {
+                            await auth.signInAnonymously();
+                        } catch (err) {
+                            console.error("Auth error:", err);
+                        }
                     }
-                };
-                initAuth();
-                const unsubAuth = auth.onAuthStateChanged(setUser);
+                });
                 return () => unsubAuth();
             }, []);
 
-            // 2. Synchronisation Cloud en Temps Réel
+            // 2. Synchronisation des données
             useEffect(() => {
                 if (!user) return;
-                const db = firebase.firestore();
 
-                // On stocke les données dans un chemin spécifique à votre utilisateur
-                const collectionPath = `artifacts/${appId}/users/${user.uid}/shootings`;
+                const collectionPath = `artifacts/${currentAppId}/users/${user.uid}/shootings`;
                 const unsub = db.collection(collectionPath).onSnapshot(snapshot => {
                     const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
                     setSessions(data.sort((a, b) => new Date(b.date) - new Date(a.date)));
                 }, err => console.error("Firestore Error:", err));
 
-                const configPath = `artifacts/${appId}/users/${user.uid}/config/preferences`;
+                const configPath = `artifacts/${currentAppId}/users/${user.uid}/config/preferences`;
                 db.doc(configPath).onSnapshot(doc => {
                     if (doc.exists) {
                         const prefs = doc.data();
@@ -144,10 +143,9 @@
                 document.documentElement.style.fontSize = `${zoom * 0.9}%`;
             }, [zoom]);
 
-            // --- ACTIONS ---
             const savePreferences = async (newPrefs) => {
                 if (!user) return;
-                await firebase.firestore().doc(`artifacts/${appId}/users/${user.uid}/config/preferences`).set(newPrefs, { merge: true });
+                await db.doc(`artifacts/${currentAppId}/users/${user.uid}/config/preferences`).set(newPrefs, { merge: true });
             };
 
             const handleFormSubmit = async (e) => {
@@ -160,7 +158,7 @@
                     hours: Number(formData.hours || 0),
                     updatedAt: Date.now()
                 };
-                const colRef = firebase.firestore().collection(`artifacts/${appId}/users/${user.uid}/shootings`);
+                const colRef = db.collection(`artifacts/${currentAppId}/users/${user.uid}/shootings`);
                 if (editingId) {
                     await colRef.doc(editingId).update(data);
                 } else {
@@ -173,12 +171,12 @@
             const togglePaid = async (e, id, currentStatus) => {
                 e.stopPropagation();
                 if (!user) return;
-                await firebase.firestore().doc(`artifacts/${appId}/users/${user.uid}/shootings/${id}`).update({ isPaid: !currentStatus });
+                await db.doc(`artifacts/${currentAppId}/users/${user.uid}/shootings/${id}`).update({ isPaid: !currentStatus });
             };
 
             const deleteSession = async (id) => {
                 if (!user) return;
-                await firebase.firestore().doc(`artifacts/${appId}/users/${user.uid}/shootings/${id}`).delete();
+                await db.doc(`artifacts/${currentAppId}/users/${user.uid}/shootings/${id}`).delete();
                 setDeleteConfirmId(null);
             };
 
@@ -193,7 +191,7 @@
 
             const startEdit = (e, s) => { e.stopPropagation(); setEditingId(s.id); setFormData(s); setView('add'); };
 
-            // --- CALCULS STATISTIQUES ---
+            // --- CALCULS ---
             const selectedMonthIdx = currentDate.getMonth();
             const selectedYear = currentDate.getFullYear();
             const selectedMonthLabel = currentDate.toLocaleString('fr-FR', { month: 'long', year: 'numeric' });
@@ -318,7 +316,7 @@
                         {(view === 'monthly' || view === 'annual') && (
                             <div className="space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-500">
                                 <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4 text-left">
-                                    <div className={`p-4 rounded-xl border ${isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-100 shadow-sm'}`}>
+                                    <div className={`p-4 rounded-xl border ${isDarkMode ? 'bg-slate-900 border-slate-800 shadow-teal-500/5' : 'bg-white border-slate-100 shadow-sm'}`}>
                                         <p className="text-[9px] font-bold text-slate-400 uppercase mb-1">CA Encaissé</p>
                                         <p className="text-xl font-black text-teal-600 tracking-tighter">{activeStats.caEncaisse.toLocaleString()}€</p>
                                     </div>
@@ -349,7 +347,7 @@
                                             <span className="text-lg font-black text-teal-500">{activeStats.digitalSum.toLocaleString()}€</span>
                                         </div>
                                         <div className="space-y-4">
-                                            {activeStats.digitalBreakdown.map((m, i) => (
+                                            {activeStats.digitalBreakdown.length > 0 ? activeStats.digitalBreakdown.map((m, i) => (
                                                 <div key={i} className="space-y-1">
                                                     <div className="flex justify-between text-[10px] font-bold uppercase">
                                                         <span className="text-slate-400">{m.name}</span><span>{m.value}€</span>
@@ -358,7 +356,7 @@
                                                         <div className="h-full bg-teal-500" style={{width: `${(m.value/(activeStats.digitalSum || 1))*100}%`}}></div>
                                                     </div>
                                                 </div>
-                                            ))}
+                                            )) : <p className="text-[10px] text-slate-500 italic text-center py-4">Aucun flux</p>}
                                         </div>
                                     </div>
                                     <div className={`p-5 rounded-2xl border ${isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-100 shadow-sm'}`}>
@@ -369,7 +367,7 @@
                                             <span className="text-lg font-black text-amber-500">{activeStats.physicalSum.toLocaleString()}€</span>
                                         </div>
                                         <div className="space-y-4">
-                                            {activeStats.physicalBreakdown.map((m, i) => (
+                                            {activeStats.physicalBreakdown.length > 0 ? activeStats.physicalBreakdown.map((m, i) => (
                                                 <div key={i} className="space-y-1">
                                                     <div className="flex justify-between text-[10px] font-bold uppercase">
                                                         <span className="text-slate-400">{m.name}</span><span>{m.value}€</span>
@@ -378,18 +376,19 @@
                                                         <div className="h-full bg-amber-500" style={{width: `${(m.value/(activeStats.physicalSum || 1))*100}%`}}></div>
                                                     </div>
                                                 </div>
-                                            ))}
+                                            )) : <p className="text-[10px] text-slate-500 italic text-center py-4">Aucun flux</p>}
                                         </div>
                                     </div>
                                 </div>
 
                                 <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 pb-12 text-left">
+                                    {/* Graphiques avec Catégories et Chiffres explicites */}
                                     <div className={`p-4 rounded-xl border ${isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-100'}`}>
                                         <h3 className="text-[10px] font-black uppercase mb-4 text-slate-400 tracking-widest italic">Mobilité (Dossiers)</h3>
                                         <div className="h-[220px]">
                                             <ResponsiveContainer width="100%" height="100%">
                                                 <PieChart margin={{ top: 20, bottom: 20 }}>
-                                                    <Pie data={activeStats.logisticData || []} innerRadius={45} outerRadius={65} paddingAngle={5} dataKey="value" stroke="none" label={({name, value}) => `${name}: ${value}`}>
+                                                    <Pie data={activeStats.logisticData || []} innerRadius={45} outerRadius={65} paddingAngle={5} dataKey="value" stroke="none" label={({name, value}) => `${name}: ${value} dossiers`}>
                                                         <Cell fill="#0d9488" strokeWidth={2} stroke={isDarkMode ? '#0f172a' : '#fff'} /><Cell fill={isDarkMode ? '#334155' : '#94a3b8'} strokeWidth={2} stroke={isDarkMode ? '#0f172a' : '#fff'} />
                                                     </Pie>
                                                     <Tooltip contentStyle={{backgroundColor: isDarkMode ? '#1e293b' : '#fff', border: 'none', borderRadius: '10px', fontSize: '10px'}}/>
@@ -573,7 +572,7 @@
                     {view !== 'add' && (
                         <div className="fixed bottom-[4.5rem] md:bottom-6 right-6 z-[100] group flex items-center">
                             <span className={`bg-slate-900 text-white text-[7px] font-black uppercase tracking-widest px-2 py-1 rounded-md mr-2 opacity-0 group-hover:opacity-100 transition-all translate-x-2 group-hover:translate-x-0 ${isDarkMode ? 'bg-slate-800' : ''}`}>Encoder</span>
-                            <button onClick={() => {setView('add'); resetForm();}} className="w-12 h-12 bg-teal-600 text-white rounded-full shadow-xl flex items-center justify-center hover:scale-110 transition-all"><Icon name="plus" size={24} /></button>
+                            <button onClick={() => {setView('add'); resetForm();}} className="w-12 h-12 bg-teal-600 text-white rounded-full shadow-xl flex items-center justify-center hover:scale-110 active:scale-95 transition-all"><Icon name="plus" size={24} /></button>
                         </div>
                     )}
 
