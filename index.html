@@ -24,21 +24,39 @@
         .recharts-cartesian-grid-horizontal line { stroke-opacity: 0.1; }
         textarea::-webkit-scrollbar { width: 4px; }
         textarea::-webkit-scrollbar-thumb { background: #0d9488; border-radius: 10px; }
+        .loading-screen { display: flex; height: 100vh; align-items: center; justify-content: center; background: #f8fafc; flex-direction: column; gap: 1rem; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
     </style>
 </head>
 <body>
-    <div id="root"></div>
+    <div id="root">
+        <div class="loading-screen">
+            <div style="border: 3px solid #f3f3f3; border-top: 3px solid #0d9488; border-radius: 50%; width: 40px; height: 40px; animation: spin 1s linear infinite;"></div>
+            <p style="color: #64748b; font-size: 14px; font-weight: 600;">Initialisation sécurisée...</p>
+        </div>
+    </div>
 
     <script type="text/babel">
         const { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, PieChart, Pie, Cell, LabelList } = window.Recharts;
         const { useState, useMemo, useEffect } = React;
 
-        // --- INITIALISATION FIREBASE ---
-        const firebaseConfig = JSON.parse(__firebase_config);
-        firebase.initializeApp(firebaseConfig);
-        const auth = firebase.auth();
-        const db = firebase.firestore();
-        const appId = typeof __app_id !== 'undefined' ? __app_id : 'ivana-studio-tracker';
+        // --- VOTRE CONFIGURATION FIREBASE PERSONNELLE ---
+        const firebaseConfig = {
+            apiKey: "AIzaSyDV_kmvQC6yAtA95efs33S17SiYopp0r2c",
+            authDomain: "ak-minstep-consult-tracker.firebaseapp.com",
+            projectId: "ak-minstep-consult-tracker",
+            storageBucket: "ak-minstep-consult-tracker.firebasestorage.app",
+            messagingSenderId: "1076236018116",
+            appId: "1:1076236018116:web:6999f5de95bb0ba0528491"
+        };
+
+        // Identifiant unique pour vos données
+        const appId = 'ivana-studio-tracker';
+
+        // Initialisation de Firebase
+        if (!firebase.apps.length) {
+            firebase.initializeApp(firebaseConfig);
+        }
 
         const Icon = ({ name, size = 18, className = "" }) => {
             useEffect(() => { if (window.lucide) window.lucide.createIcons(); }, [name]);
@@ -64,7 +82,6 @@
             const [currentDate, setCurrentDate] = useState(new Date());
             const [sessions, setSessions] = useState([]);
             
-            // Réglages par défaut robustes
             const [shootingTypes, setShootingTypes] = useState(["Portrait", "Mariage", "Grossesse", "Bébé", "Évènement", "Corporate"]);
             const [locations, setLocations] = useState(["Studio", "Extérieur", "Domicile"]);
             const [paymentMethods, setPaymentMethods] = useState(["Virement", "Espèces", "Lydia/Paylib", "Chèque"]);
@@ -79,13 +96,16 @@
                 price: '', expenses: '', hours: '', isPaid: false, isCancelled: false, paymentMethod: "Virement", notes: ''
             });
 
-            // 1. Authentification
+            // 1. Authentification Automatique
             useEffect(() => {
+                const auth = firebase.auth();
                 const initAuth = async () => {
-                    if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-                        await auth.signInWithCustomToken(__initial_auth_token);
-                    } else {
+                    try {
+                        // On utilise une connexion anonyme pour que vous n'ayez pas à vous loguer, 
+                        // mais les données resteront liées à votre appareil/navigateur.
                         await auth.signInAnonymously();
+                    } catch (err) {
+                        console.error("Auth error:", err);
                     }
                 };
                 initAuth();
@@ -93,10 +113,12 @@
                 return () => unsubAuth();
             }, []);
 
-            // 2. Synchronisation des données
+            // 2. Synchronisation Cloud en Temps Réel
             useEffect(() => {
                 if (!user) return;
+                const db = firebase.firestore();
 
+                // On stocke les données dans un chemin spécifique à votre utilisateur
                 const collectionPath = `artifacts/${appId}/users/${user.uid}/shootings`;
                 const unsub = db.collection(collectionPath).onSnapshot(snapshot => {
                     const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
@@ -122,9 +144,10 @@
                 document.documentElement.style.fontSize = `${zoom * 0.9}%`;
             }, [zoom]);
 
+            // --- ACTIONS ---
             const savePreferences = async (newPrefs) => {
                 if (!user) return;
-                await db.doc(`artifacts/${appId}/users/${user.uid}/config/preferences`).set(newPrefs, { merge: true });
+                await firebase.firestore().doc(`artifacts/${appId}/users/${user.uid}/config/preferences`).set(newPrefs, { merge: true });
             };
 
             const handleFormSubmit = async (e) => {
@@ -137,7 +160,7 @@
                     hours: Number(formData.hours || 0),
                     updatedAt: Date.now()
                 };
-                const colRef = db.collection(`artifacts/${appId}/users/${user.uid}/shootings`);
+                const colRef = firebase.firestore().collection(`artifacts/${appId}/users/${user.uid}/shootings`);
                 if (editingId) {
                     await colRef.doc(editingId).update(data);
                 } else {
@@ -150,12 +173,12 @@
             const togglePaid = async (e, id, currentStatus) => {
                 e.stopPropagation();
                 if (!user) return;
-                await db.doc(`artifacts/${appId}/users/${user.uid}/shootings/${id}`).update({ isPaid: !currentStatus });
+                await firebase.firestore().doc(`artifacts/${appId}/users/${user.uid}/shootings/${id}`).update({ isPaid: !currentStatus });
             };
 
             const deleteSession = async (id) => {
                 if (!user) return;
-                await db.doc(`artifacts/${appId}/users/${user.uid}/shootings/${id}`).delete();
+                await firebase.firestore().doc(`artifacts/${appId}/users/${user.uid}/shootings/${id}`).delete();
                 setDeleteConfirmId(null);
             };
 
@@ -170,25 +193,13 @@
 
             const startEdit = (e, s) => { e.stopPropagation(); setEditingId(s.id); setFormData(s); setView('add'); };
 
-            const navigateMonth = (dir) => {
-                const d = new Date(currentDate);
-                d.setMonth(d.getMonth() + dir);
-                setCurrentDate(d);
-            };
-
-            const navigateYear = (dir) => {
-                const d = new Date(currentDate);
-                d.setFullYear(d.getFullYear() + dir);
-                setCurrentDate(d);
-            };
-
             // --- CALCULS STATISTIQUES ---
             const selectedMonthIdx = currentDate.getMonth();
             const selectedYear = currentDate.getFullYear();
             const selectedMonthLabel = currentDate.toLocaleString('fr-FR', { month: 'long', year: 'numeric' });
 
             const stats = useMemo(() => {
-                const annualData = (sessions || []).filter(s => new Date(s.date).getFullYear() === selectedYear);
+                const annualData = (sessions || []).filter(s => s && s.date && new Date(s.date).getFullYear() === selectedYear);
                 const monthlyData = annualData.filter(s => new Date(s.date).getMonth() === selectedMonthIdx);
 
                 const compute = (data) => {
@@ -244,7 +255,12 @@
             const chartTextColor = isDarkMode ? '#94a3b8' : '#64748b';
             const labelColor = isDarkMode ? '#2dd4bf' : '#0d9488';
 
-            if (!user) return <div className="flex h-screen items-center justify-center bg-slate-50"><div className="animate-spin rounded-full h-12 w-12 border-b-2 border-teal-600"></div></div>;
+            if (!user) return (
+                <div className="loading-screen">
+                    <div style={{ border: "3px solid #f3f3f3", borderTop: "3px solid #0d9488", borderRadius: "50%", width: "40px", height: "40px", animation: "spin 1s linear infinite" }}></div>
+                    <p style={{ color: "#64748b", fontSize: "14px", fontWeight: "600" }}>Connexion Cloud sécurisée...</p>
+                </div>
+            );
 
             return (
                 <div className={`min-h-screen pb-20 md:pb-0 ${isDarkMode ? 'bg-slate-950 text-slate-100' : 'bg-slate-50 text-slate-900'}`}>
@@ -255,7 +271,7 @@
                             <div className="bg-teal-600 p-1.5 rounded-lg shadow-lg"><Icon name="camera" className="text-white" size={16}/></div>
                             <div className="flex flex-col text-left">
                                 <span className="text-base font-black tracking-tighter italic leading-none">Ivana Bardunov</span>
-                                <span className="text-[7px] font-bold text-teal-600 uppercase tracking-[0.2em]">CLOUD studio tracker</span>
+                                <span className="text-[7px] font-bold text-teal-600 uppercase tracking-[0.2em]">CLOUD sync active</span>
                             </div>
                         </div>
                         <div className={`flex items-center gap-1 p-1 rounded-lg ${isDarkMode ? 'bg-slate-800' : 'bg-slate-100'}`}>
@@ -268,7 +284,7 @@
                         </div>
                         <div className="text-right flex items-center gap-3">
                             <button onClick={() => {setIsDarkMode(!isDarkMode); savePreferences({isDarkMode: !isDarkMode});}} className="text-slate-400 hover:text-teal-500"><Icon name={isDarkMode ? 'sun' : 'moon'} size={14}/></button>
-                            <p className="text-[7px] font-black text-slate-400 uppercase">Cloud Sync Active</p>
+                            <p className="text-[7px] font-black text-slate-400 uppercase">Synchronisé</p>
                         </div>
                     </nav>
 
@@ -285,13 +301,13 @@
                     <main className="p-4 md:p-6 max-w-[1200px] mx-auto text-left">
                         <header className="mb-6 flex flex-col md:flex-row md:items-center justify-between gap-4">
                             <div>
-                                <div className="flex items-center gap-2 mb-2"><span className="h-px w-6 bg-teal-500"></span><span className="text-teal-600 font-bold text-[9px] uppercase tracking-[0.3em]">SYNCHRONISATION ACTIVE</span></div>
+                                <div className="flex items-center gap-2 mb-2"><span className="h-px w-6 bg-teal-500"></span><span className="text-teal-600 font-bold text-[9px] uppercase tracking-[0.3em]">PILOTAGE CLOUD</span></div>
                                 <div className="flex items-center gap-4">
-                                    {(view === 'monthly' || view === 'annual') && <button onClick={() => view === 'monthly' ? navigateMonth(-1) : navigateYear(-1)} className="p-1 hover:bg-teal-500/10 rounded-lg transition-all"><Icon name="chevron-left" className="text-teal-600"/></button>}
+                                    {(view === 'monthly' || view === 'annual') && <button onClick={() => view === 'monthly' ? (currentDate.setMonth(currentDate.getMonth()-1), setCurrentDate(new Date(currentDate))) : (currentDate.setFullYear(currentDate.getFullYear()-1), setCurrentDate(new Date(currentDate)))} className="p-1 hover:bg-teal-500/10 rounded-lg transition-all"><Icon name="chevron-left" className="text-teal-600"/></button>}
                                     <h2 className="text-2xl font-black italic capitalize leading-tight">
                                         {view === 'monthly' ? selectedMonthLabel : view === 'annual' ? `Bilan ${selectedYear}` : view === 'list' ? "Journal" : (editingId ? "Modification" : "Nouveau")}
                                     </h2>
-                                    {(view === 'monthly' || view === 'annual') && <button onClick={() => view === 'monthly' ? navigateMonth(1) : navigateYear(1)} className="p-1 hover:bg-teal-500/10 rounded-lg transition-all"><Icon name="chevron-right" className="text-teal-600"/></button>}
+                                    {(view === 'monthly' || view === 'annual') && <button onClick={() => view === 'monthly' ? (currentDate.setMonth(currentDate.getMonth()+1), setCurrentDate(new Date(currentDate))) : (currentDate.setFullYear(currentDate.getFullYear()+1), setCurrentDate(new Date(currentDate)))} className="p-1 hover:bg-teal-500/10 rounded-lg transition-all"><Icon name="chevron-right" className="text-teal-600"/></button>}
                                 </div>
                             </div>
                             {(view === 'monthly' || view === 'annual') && (
@@ -302,7 +318,7 @@
                         {(view === 'monthly' || view === 'annual') && (
                             <div className="space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-500">
                                 <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4 text-left">
-                                    <div className={`p-4 rounded-xl border ${isDarkMode ? 'bg-slate-900 border-slate-800 shadow-teal-500/5' : 'bg-white border-slate-100 shadow-sm'}`}>
+                                    <div className={`p-4 rounded-xl border ${isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-100 shadow-sm'}`}>
                                         <p className="text-[9px] font-bold text-slate-400 uppercase mb-1">CA Encaissé</p>
                                         <p className="text-xl font-black text-teal-600 tracking-tighter">{activeStats.caEncaisse.toLocaleString()}€</p>
                                     </div>
@@ -324,14 +340,16 @@
                                     </div>
                                 </div>
 
-                                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                    <div className={`p-5 rounded-2xl border ${isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-100'}`}>
-                                        <h3 className="text-xs font-black uppercase text-teal-500 mb-6 flex justify-between">
-                                            <span>Paiements Bancaires</span>
-                                            <span>{activeStats.digitalSum}€</span>
-                                        </h3>
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-left">
+                                    <div className={`p-5 rounded-2xl border ${isDarkMode ? 'bg-slate-900 border-slate-800 shadow-teal-900/5' : 'bg-white border-slate-100 shadow-sm'}`}>
+                                        <div className="flex justify-between items-center mb-6">
+                                            <h3 className="text-xs font-black italic flex items-center gap-2">
+                                                <Icon name="landmark" size={14} className="text-teal-500" /> <span className="text-teal-500 uppercase tracking-tight">Paiements bancaires</span>
+                                            </h3>
+                                            <span className="text-lg font-black text-teal-500">{activeStats.digitalSum.toLocaleString()}€</span>
+                                        </div>
                                         <div className="space-y-4">
-                                            {activeStats.digitalBreakdown.length > 0 ? activeStats.digitalBreakdown.map((m, i) => (
+                                            {activeStats.digitalBreakdown.map((m, i) => (
                                                 <div key={i} className="space-y-1">
                                                     <div className="flex justify-between text-[10px] font-bold uppercase">
                                                         <span className="text-slate-400">{m.name}</span><span>{m.value}€</span>
@@ -340,16 +358,18 @@
                                                         <div className="h-full bg-teal-500" style={{width: `${(m.value/(activeStats.digitalSum || 1))*100}%`}}></div>
                                                     </div>
                                                 </div>
-                                            )) : <p className="text-[10px] text-slate-500 italic text-center py-4">Aucun flux</p>}
+                                            ))}
                                         </div>
                                     </div>
-                                    <div className={`p-5 rounded-2xl border ${isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-100'}`}>
-                                        <h3 className="text-xs font-black uppercase text-amber-500 mb-6 flex justify-between">
-                                            <span>Paiements Espèce</span>
-                                            <span>{activeStats.physicalSum}€</span>
-                                        </h3>
+                                    <div className={`p-5 rounded-2xl border ${isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-100 shadow-sm'}`}>
+                                        <div className="flex justify-between items-center mb-6">
+                                            <h3 className="text-xs font-black italic flex items-center gap-2">
+                                                <Icon name="banknote" size={14} className="text-amber-500" /> <span className="text-amber-500 uppercase tracking-tight">Paiement en espèce</span>
+                                            </h3>
+                                            <span className="text-lg font-black text-amber-500">{activeStats.physicalSum.toLocaleString()}€</span>
+                                        </div>
                                         <div className="space-y-4">
-                                            {activeStats.physicalBreakdown.length > 0 ? activeStats.physicalBreakdown.map((m, i) => (
+                                            {activeStats.physicalBreakdown.map((m, i) => (
                                                 <div key={i} className="space-y-1">
                                                     <div className="flex justify-between text-[10px] font-bold uppercase">
                                                         <span className="text-slate-400">{m.name}</span><span>{m.value}€</span>
@@ -358,18 +378,18 @@
                                                         <div className="h-full bg-amber-500" style={{width: `${(m.value/(activeStats.physicalSum || 1))*100}%`}}></div>
                                                     </div>
                                                 </div>
-                                            )) : <p className="text-[10px] text-slate-500 italic text-center py-4">Aucun flux</p>}
+                                            ))}
                                         </div>
                                     </div>
                                 </div>
 
-                                <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 pb-12">
+                                <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 pb-12 text-left">
                                     <div className={`p-4 rounded-xl border ${isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-100'}`}>
                                         <h3 className="text-[10px] font-black uppercase mb-4 text-slate-400 tracking-widest italic">Mobilité (Dossiers)</h3>
                                         <div className="h-[220px]">
                                             <ResponsiveContainer width="100%" height="100%">
                                                 <PieChart margin={{ top: 20, bottom: 20 }}>
-                                                    <Pie data={activeStats.logisticData || []} innerRadius={45} outerRadius={65} paddingAngle={5} dataKey="value" stroke="none" label={({name, value}) => `${name}: ${value} dossiers`}>
+                                                    <Pie data={activeStats.logisticData || []} innerRadius={45} outerRadius={65} paddingAngle={5} dataKey="value" stroke="none" label={({name, value}) => `${name}: ${value}`}>
                                                         <Cell fill="#0d9488" strokeWidth={2} stroke={isDarkMode ? '#0f172a' : '#fff'} /><Cell fill={isDarkMode ? '#334155' : '#94a3b8'} strokeWidth={2} stroke={isDarkMode ? '#0f172a' : '#fff'} />
                                                     </Pie>
                                                     <Tooltip contentStyle={{backgroundColor: isDarkMode ? '#1e293b' : '#fff', border: 'none', borderRadius: '10px', fontSize: '10px'}}/>
@@ -449,15 +469,15 @@
                             <div className={`max-w-xl mx-auto p-6 rounded-2xl border animate-in zoom-in-95 duration-300 ${isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-100 shadow-xl'}`}>
                                 <form onSubmit={handleFormSubmit} className="space-y-4 text-left">
                                     <div className="space-y-1"><label className="text-[9px] font-black uppercase text-slate-500 ml-1">Client</label><input type="text" placeholder="Nom..." required className={`w-full p-3 rounded-lg border-none outline-none font-bold text-sm ${isDarkMode ? 'bg-slate-800 text-white' : 'bg-slate-100 text-slate-900'}`} value={formData.client} onChange={e => setFormData({...formData, client: e.target.value})} /></div>
-                                    <div className="grid grid-cols-2 gap-4">
+                                    <div className="grid grid-cols-2 gap-4 text-left">
                                         <div className="space-y-1"><label className="text-[9px] font-black uppercase text-slate-500 ml-1">Date</label><input type="date" className={`w-full p-3 rounded-lg border-none outline-none text-sm ${isDarkMode ? 'bg-slate-800 text-white' : 'bg-slate-100 text-slate-900'}`} value={formData.date} onChange={e => setFormData({...formData, date: e.target.value})} /></div>
                                         <div className="space-y-1"><label className="text-[9px] font-black uppercase text-slate-500 ml-1">CA (€)</label><input type="number" required className={`w-full p-3 rounded-lg border-none outline-none font-black text-teal-600 text-sm ${isDarkMode ? 'bg-slate-800' : 'bg-slate-100'}`} value={formData.price} onChange={e => setFormData({...formData, price: e.target.value})} /></div>
                                     </div>
-                                    <div className="grid grid-cols-2 gap-4 border-t border-slate-500/10 pt-4">
+                                    <div className="grid grid-cols-2 gap-4 border-t border-slate-500/10 pt-4 text-left">
                                         <div className="space-y-1"><label className="text-[9px] font-black uppercase text-rose-500 ml-1 font-bold">Dépenses (€)</label><input type="number" placeholder="0" className={`w-full p-3 rounded-lg border-none outline-none font-bold text-rose-500 text-sm ${isDarkMode ? 'bg-slate-800' : 'bg-slate-100'}`} value={formData.expenses} onChange={e => setFormData({...formData, expenses: e.target.value})} /></div>
                                         <div className="space-y-1"><label className="text-[9px] font-black uppercase text-teal-500 ml-1 font-bold">Temps total (h)</label><input type="number" placeholder="0" step="0.5" className={`w-full p-3 rounded-lg border-none outline-none font-bold text-teal-600 text-sm ${isDarkMode ? 'bg-slate-800' : 'bg-slate-100'}`} value={formData.hours} onChange={e => setFormData({...formData, hours: e.target.value})} /></div>
                                     </div>
-                                    <div className="grid grid-cols-2 gap-4">
+                                    <div className="grid grid-cols-2 gap-4 text-left">
                                         <div className="space-y-1">
                                             <label className="text-[9px] font-black uppercase text-slate-500 ml-1">Prestation</label>
                                             <select className={`w-full p-3 rounded-lg border-none outline-none text-sm font-bold ${isDarkMode ? 'bg-slate-800 text-white' : 'bg-slate-100 text-slate-900'}`} value={formData.type} onChange={e => setFormData({...formData, type: e.target.value})}>{(shootingTypes || []).map(t => <option key={t} value={t}>{t}</option>)}</select>
@@ -467,11 +487,11 @@
                                             <select className={`w-full p-3 rounded-lg border-none outline-none text-sm font-bold ${isDarkMode ? 'bg-slate-800 text-white' : 'bg-slate-100 text-slate-900'}`} value={formData.location} onChange={e => setFormData({...formData, location: e.target.value})}>{(locations || []).map(l => <option key={l} value={l}>{l}</option>)}</select>
                                         </div>
                                     </div>
-                                    <div className="space-y-1">
+                                    <div className="space-y-1 text-left">
                                         <label className="text-[9px] font-black uppercase text-slate-500 ml-1">Règlement</label>
                                         <select className={`w-full p-3 rounded-lg border-none outline-none text-sm font-bold ${isDarkMode ? 'bg-slate-800 text-white' : 'bg-slate-100 text-slate-900'}`} value={formData.paymentMethod} onChange={e => setFormData({...formData, paymentMethod: e.target.value})}>{(paymentMethods || []).map(m => <option key={m} value={m}>{m}</option>)}</select>
                                     </div>
-                                    <div className="space-y-1">
+                                    <div className="space-y-1 text-left">
                                         <label className="text-[9px] font-black uppercase text-slate-500 ml-1 italic">Notes</label>
                                         <textarea placeholder="Observations..." className={`w-full p-3 rounded-lg border-none outline-none text-sm h-24 resize-none ${isDarkMode ? 'bg-slate-800 text-white' : 'bg-slate-100 text-slate-900'}`} value={formData.notes} onChange={e => setFormData({...formData, notes: e.target.value})}></textarea>
                                     </div>
@@ -529,14 +549,14 @@
                         <div className="fixed inset-0 z-[300] flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-md animate-in fade-in duration-300">
                             <div className={`relative max-w-lg w-full rounded-3xl p-6 shadow-2xl overflow-hidden border ${isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-200'}`}>
                                 <button onClick={() => setViewingSession(null)} className="absolute top-4 right-4 p-2 rounded-full bg-slate-500/10 hover:bg-rose-500/20 hover:text-rose-500 transition-all"><Icon name="x" size={18}/></button>
-                                <div className="flex items-center gap-4 mb-6">
+                                <div className="flex items-center gap-4 mb-6 text-left">
                                     <div className="p-3 bg-teal-600 rounded-2xl shadow-lg text-white"><Icon name="user" size={24}/></div>
-                                    <div className="text-left">
+                                    <div>
                                         <h3 className="text-xl font-black italic leading-none">{viewingSession.client}</h3>
                                         <p className="text-[10px] font-bold text-teal-600 uppercase mt-1">{viewingSession.type} • {viewingSession.date}</p>
                                     </div>
                                 </div>
-                                <div className="grid grid-cols-2 gap-3 mb-6">
+                                <div className="grid grid-cols-2 gap-3 mb-6 text-left">
                                     <div className={`p-4 rounded-2xl border ${isDarkMode ? 'bg-slate-800/50' : 'bg-slate-50'}`}><p className="text-[8px] font-black text-slate-400 uppercase mb-1">Honoraires</p><p className="text-xl font-black text-teal-600">{viewingSession.price}€</p></div>
                                     <div className={`p-4 rounded-2xl border ${isDarkMode ? 'bg-slate-800/50' : 'bg-slate-50'}`}><p className="text-[8px] font-black text-slate-400 uppercase mb-1">Frais</p><p className="text-xl font-black text-rose-500">{viewingSession.expenses || 0}€</p></div>
                                 </div>
