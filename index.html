@@ -32,7 +32,7 @@
     <div id="root">
         <div class="loading-screen">
             <div style="border: 3px solid #f3f3f3; border-top: 3px solid #0d9488; border-radius: 50%; width: 40px; height: 40px; animation: spin 1s linear infinite;"></div>
-            <p style="color: #64748b; font-size: 14px; font-weight: 600;">Connexion au Cloud...</p>
+            <p style="color: #64748b; font-size: 14px; font-weight: 600;">Synchronisation en cours...</p>
         </div>
     </div>
 
@@ -40,7 +40,7 @@
         const { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, PieChart, Pie, Cell, LabelList } = window.Recharts;
         const { useState, useMemo, useEffect } = React;
 
-        // --- CONFIGURATION FIREBASE ---
+        // --- CONFIGURATION FIREBASE (SYNCHRONISATION MULTI-APPAREILS) ---
         const firebaseConfig = {
             apiKey: "AIzaSyDV_kmvQC6yAtA95efs33S17SiYopp0r2c",
             authDomain: "ak-minstep-consult-tracker.firebaseapp.com",
@@ -50,10 +50,8 @@
             appId: "1:1076236018116:web:6999f5de95bb0ba0528491"
         };
 
-        // Identifiant de l'application
         const currentAppId = 'ivana-studio-tracker';
 
-        // Initialisation sécurisée
         if (!firebase.apps.length) {
             firebase.initializeApp(firebaseConfig);
         }
@@ -83,10 +81,13 @@
             const [zoom, setZoom] = useState(100);
             const [currentDate, setCurrentDate] = useState(new Date());
             const [sessions, setSessions] = useState([]);
-            
+            const [entryType, setEntryType] = useState('shooting');
+
+            // Réglages synchronisés
             const [shootingTypes, setShootingTypes] = useState(["Portrait", "Mariage", "Grossesse", "Bébé", "Évènement", "Corporate"]);
             const [locations, setLocations] = useState(["Studio", "Extérieur", "Domicile"]);
             const [paymentMethods, setPaymentMethods] = useState(["Virement", "Espèces", "Lydia/Paylib", "Chèque"]);
+            const [expenseCategories, setExpenseCategories] = useState(["Cotisations URSSAF", "Assurance", "Loyer/Studio", "Matériel", "Logiciels", "Marketing", "Frais bancaires", "Autre"]);
             
             const [editingId, setEditingId] = useState(null);
             const [deleteConfirmId, setDeleteConfirmId] = useState(null);
@@ -95,57 +96,51 @@
             const [formData, setFormData] = useState({
                 date: new Date().toISOString().split('T')[0],
                 client: '', type: "Portrait", location: "Studio", modality: "Présentiel",
-                price: '', expenses: '', hours: '', isPaid: false, isCancelled: false, paymentMethod: "Virement", notes: ''
+                price: '', expenses: '', hours: '', isPaid: false, isCancelled: false, paymentMethod: "Virement", notes: '',
+                expenseCategory: 'Cotisations URSSAF', label: ''
             });
 
-            // 1. Authentification
+            // 1. Authentification pour accès à la DB
             useEffect(() => {
                 const unsubAuth = auth.onAuthStateChanged(async (user) => {
-                    if (user) {
-                        setUser(user);
-                    } else {
-                        try {
-                            await auth.signInAnonymously();
-                        } catch (err) {
-                            console.error("Auth error:", err);
-                        }
+                    if (user) { setUser(user); } else {
+                        try { await auth.signInAnonymously(); } catch (err) { console.error("Auth error:", err); }
                     }
                 });
                 return () => unsubAuth();
             }, []);
 
-            // 2. Synchronisation des données
+            // 2. Synchronisation en temps réel (Chemin PUBLIC pour multi-appareils)
             useEffect(() => {
                 if (!user) return;
 
-                const collectionPath = `artifacts/${currentAppId}/users/${user.uid}/shootings`;
+                // On utilise le chemin 'public/data' pour que PC et Mobile voient la même chose
+                const collectionPath = `artifacts/${currentAppId}/public/data/shootings`;
                 const unsub = db.collection(collectionPath).onSnapshot(snapshot => {
                     const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
                     setSessions(data.sort((a, b) => new Date(b.date) - new Date(a.date)));
                 }, err => console.error("Firestore Error:", err));
 
-                const configPath = `artifacts/${currentAppId}/users/${user.uid}/config/preferences`;
+                const configPath = `artifacts/${currentAppId}/public/data/config/preferences`;
                 db.doc(configPath).onSnapshot(doc => {
                     if (doc.exists) {
                         const prefs = doc.data();
                         if (Array.isArray(prefs.shootingTypes)) setShootingTypes(prefs.shootingTypes);
                         if (Array.isArray(prefs.locations)) setLocations(prefs.locations);
                         if (Array.isArray(prefs.paymentMethods)) setPaymentMethods(prefs.paymentMethods);
+                        if (Array.isArray(prefs.expenseCategories)) setExpenseCategories(prefs.expenseCategories);
                         if (prefs.isDarkMode !== undefined) setIsDarkMode(prefs.isDarkMode);
                         if (prefs.zoom) setZoom(prefs.zoom);
                     }
                 });
-
                 return () => unsub();
             }, [user]);
 
-            useEffect(() => {
-                document.documentElement.style.fontSize = `${zoom * 0.9}%`;
-            }, [zoom]);
+            useEffect(() => { document.documentElement.style.fontSize = `${zoom * 0.9}%`; }, [zoom]);
 
             const savePreferences = async (newPrefs) => {
                 if (!user) return;
-                await db.doc(`artifacts/${currentAppId}/users/${user.uid}/config/preferences`).set(newPrefs, { merge: true });
+                await db.doc(`artifacts/${currentAppId}/public/data/config/preferences`).set(newPrefs, { merge: true });
             };
 
             const handleFormSubmit = async (e) => {
@@ -153,12 +148,13 @@
                 if (!user) return;
                 const data = { 
                     ...formData, 
-                    price: Number(formData.price),
+                    entryType,
+                    price: Number(formData.price || 0),
                     expenses: Number(formData.expenses || 0),
                     hours: Number(formData.hours || 0),
                     updatedAt: Date.now()
                 };
-                const colRef = db.collection(`artifacts/${currentAppId}/users/${user.uid}/shootings`);
+                const colRef = db.collection(`artifacts/${currentAppId}/public/data/shootings`);
                 if (editingId) {
                     await colRef.doc(editingId).update(data);
                 } else {
@@ -171,12 +167,12 @@
             const togglePaid = async (e, id, currentStatus) => {
                 e.stopPropagation();
                 if (!user) return;
-                await db.doc(`artifacts/${currentAppId}/users/${user.uid}/shootings/${id}`).update({ isPaid: !currentStatus });
+                await db.doc(`artifacts/${currentAppId}/public/data/shootings/${id}`).update({ isPaid: !currentStatus });
             };
 
             const deleteSession = async (id) => {
                 if (!user) return;
-                await db.doc(`artifacts/${currentAppId}/users/${user.uid}/shootings/${id}`).delete();
+                await db.doc(`artifacts/${currentAppId}/public/data/shootings/${id}`).delete();
                 setDeleteConfirmId(null);
             };
 
@@ -184,14 +180,21 @@
                 setEditingId(null);
                 setFormData({
                     date: new Date().toISOString().split('T')[0],
-                    client: '', type: shootingTypes[0] || "Portrait", location: locations[0] || "Studio", modality: "Présentiel",
-                    price: '', expenses: '', hours: '', isPaid: false, isCancelled: false, paymentMethod: paymentMethods[0] || "Virement", notes: ''
+                    client: '', type: shootingTypes[0], location: locations[0], modality: "Présentiel",
+                    price: '', expenses: '', hours: '', isPaid: false, isCancelled: false, paymentMethod: paymentMethods[0], notes: '',
+                    expenseCategory: expenseCategories[0], label: ''
                 });
             };
 
-            const startEdit = (e, s) => { e.stopPropagation(); setEditingId(s.id); setFormData(s); setView('add'); };
+            const startEdit = (e, s) => { 
+                e.stopPropagation(); 
+                setEntryType(s.entryType || 'shooting');
+                setEditingId(s.id); 
+                setFormData(s); 
+                setView('add'); 
+            };
 
-            // --- CALCULS ---
+            // --- CALCULS STATISTIQUES ---
             const selectedMonthIdx = currentDate.getMonth();
             const selectedYear = currentDate.getFullYear();
             const selectedMonthLabel = currentDate.toLocaleString('fr-FR', { month: 'long', year: 'numeric' });
@@ -201,48 +204,37 @@
                 const monthlyData = annualData.filter(s => new Date(s.date).getMonth() === selectedMonthIdx);
 
                 const compute = (data) => {
-                    const caEncaisse = data.filter(s => s.isPaid && !s.isCancelled).reduce((acc, s) => acc + Number(s.price || 0), 0);
-                    const impayes = data.filter(s => !s.isPaid && !s.isCancelled).reduce((acc, s) => acc + Number(s.price || 0), 0);
-                    const totalExpenses = data.reduce((acc, s) => acc + Number(s.expenses || 0), 0);
-                    const totalHours = data.filter(s => !s.isCancelled).reduce((acc, s) => acc + Number(s.hours || 0), 0);
+                    const caEncaisse = data.filter(s => s.entryType !== 'expense' && s.isPaid && !s.isCancelled).reduce((acc, s) => acc + Number(s.price || 0), 0);
+                    const impayes = data.filter(s => s.entryType !== 'expense' && !s.isPaid && !s.isCancelled).reduce((acc, s) => acc + Number(s.price || 0), 0);
+                    const shootingFees = data.filter(s => s.entryType !== 'expense').reduce((acc, s) => acc + Number(s.expenses || 0), 0);
+                    const proExpenses = data.filter(s => s.entryType === 'expense').reduce((acc, s) => acc + Number(s.price || 0), 0);
+                    const totalExpenses = shootingFees + proExpenses;
+                    const totalHours = data.filter(s => s.entryType !== 'expense' && !s.isCancelled).reduce((acc, s) => acc + Number(s.hours || 0), 0);
                     const profitNet = caEncaisse - totalExpenses;
                     const hourlyRate = totalHours > 0 ? caEncaisse / totalHours : 0;
                     
                     const byType = (shootingTypes || []).map(t => ({ 
-                        name: t, value: data.filter(s => s.type === t && !s.isCancelled).reduce((acc, s) => acc + Number(s.price || 0), 0) 
+                        name: t, value: data.filter(s => s.entryType !== 'expense' && s.type === t && !s.isCancelled).reduce((acc, s) => acc + Number(s.price || 0), 0) 
                     })).filter(v => v.value > 0);
 
-                    const digitalSum = data.filter(s => DIGITAL_KEYS.some(key => s.paymentMethod?.includes(key)) && s.isPaid).reduce((acc, s) => acc + Number(s.price || 0), 0);
-                    const physicalSum = data.filter(s => !DIGITAL_KEYS.some(key => s.paymentMethod?.includes(key)) && s.isPaid).reduce((acc, s) => acc + Number(s.price || 0), 0);
+                    const digitalSum = data.filter(s => s.entryType !== 'expense' && DIGITAL_KEYS.some(key => s.paymentMethod?.includes(key)) && s.isPaid).reduce((acc, s) => acc + Number(s.price || 0), 0);
+                    const physicalSum = data.filter(s => s.entryType !== 'expense' && !DIGITAL_KEYS.some(key => s.paymentMethod?.includes(key)) && s.isPaid).reduce((acc, s) => acc + Number(s.price || 0), 0);
 
-                    const digitalBreakdown = (paymentMethods || [])
-                        .filter(m => DIGITAL_KEYS.some(key => m.includes(key)))
-                        .map(m => ({ name: m, value: data.filter(s => s.paymentMethod === m && s.isPaid).reduce((acc, s) => acc + Number(s.price || 0), 0) }))
-                        .filter(v => v.value > 0);
-
-                    const physicalBreakdown = (paymentMethods || [])
-                        .filter(m => !DIGITAL_KEYS.some(key => m.includes(key)))
-                        .map(m => ({ name: m, value: data.filter(s => s.paymentMethod === m && s.isPaid).reduce((acc, s) => acc + Number(s.price || 0), 0) }))
-                        .filter(v => v.value > 0);
-
-                    const studioCount = data.filter(s => s.location === "Studio" && !s.isCancelled).length;
-                    const travelCount = data.filter(s => s.location !== "Studio" && !s.isCancelled).length;
                     const logisticData = [
-                        { name: 'Studio', value: studioCount }, 
-                        { name: 'Déplacement', value: travelCount }
+                        { name: 'Studio', value: data.filter(s => s.entryType !== 'expense' && s.location === "Studio" && !s.isCancelled).length }, 
+                        { name: 'Déplacement', value: data.filter(s => s.entryType !== 'expense' && s.location !== "Studio" && !s.isCancelled).length }
                     ].filter(v => v.value > 0);
 
-                    return { caEncaisse, impayes, totalExpenses, profitNet, totalHours, hourlyRate, byType, digitalSum, physicalSum, digitalBreakdown, physicalBreakdown, logisticData };
+                    return { caEncaisse, impayes, totalExpenses, profitNet, totalHours, hourlyRate, byType, digitalSum, physicalSum, logisticData };
                 };
 
                 const months = ["Jan", "Fév", "Mar", "Avr", "Mai", "Jun", "Jul", "Aoû", "Sep", "Oct", "Nov", "Déc"];
                 const monthlyEvolution = months.map((m, i) => {
-                    const monthSessions = annualData.filter(s => new Date(s.date).getMonth() === i);
-                    return {
-                        name: m, 
-                        ca: monthSessions.reduce((acc, s) => acc + Number(s.price || 0), 0),
-                        dep: monthSessions.reduce((acc, s) => acc + Number(s.expenses || 0), 0)
-                    };
+                    const mData = annualData.filter(s => new Date(s.date).getMonth() === i);
+                    const monthCA = mData.filter(s => s.entryType !== 'expense').reduce((acc, s) => acc + Number(s.price || 0), 0);
+                    const monthFees = mData.filter(s => s.entryType !== 'expense').reduce((acc, s) => acc + Number(s.expenses || 0), 0);
+                    const monthProDep = mData.filter(s => s.entryType === 'expense').reduce((acc, s) => acc + Number(s.price || 0), 0);
+                    return { name: m, ca: monthCA, dep: monthFees + monthProDep };
                 });
 
                 return { monthly: compute(monthlyData), annual: compute(annualData), evolution: monthlyEvolution };
@@ -253,12 +245,7 @@
             const chartTextColor = isDarkMode ? '#94a3b8' : '#64748b';
             const labelColor = isDarkMode ? '#2dd4bf' : '#0d9488';
 
-            if (!user) return (
-                <div className="loading-screen">
-                    <div style={{ border: "3px solid #f3f3f3", borderTop: "3px solid #0d9488", borderRadius: "50%", width: "40px", height: "40px", animation: "spin 1s linear infinite" }}></div>
-                    <p style={{ color: "#64748b", fontSize: "14px", fontWeight: "600" }}>Connexion Cloud sécurisée...</p>
-                </div>
-            );
+            if (!user) return <div className="loading-screen"><div style={{ border: "3px solid #f3f3f3", borderTop: "3px solid #0d9488", borderRadius: "50%", width: "40px", height: "40px", animation: "spin 1s linear infinite" }}></div></div>;
 
             return (
                 <div className={`min-h-screen pb-20 md:pb-0 ${isDarkMode ? 'bg-slate-950 text-slate-100' : 'bg-slate-50 text-slate-900'}`}>
@@ -269,7 +256,7 @@
                             <div className="bg-teal-600 p-1.5 rounded-lg shadow-lg"><Icon name="camera" className="text-white" size={16}/></div>
                             <div className="flex flex-col text-left">
                                 <span className="text-base font-black tracking-tighter italic leading-none">Ivana Bardunov</span>
-                                <span className="text-[7px] font-bold text-teal-600 uppercase tracking-[0.2em]">CLOUD sync active</span>
+                                <span className="text-[7px] font-bold text-teal-600 uppercase tracking-[0.2em]">CLOUD sync partagé</span>
                             </div>
                         </div>
                         <div className={`flex items-center gap-1 p-1 rounded-lg ${isDarkMode ? 'bg-slate-800' : 'bg-slate-100'}`}>
@@ -281,12 +268,12 @@
                             ))}
                         </div>
                         <div className="text-right flex items-center gap-3">
-                            <button onClick={() => {setIsDarkMode(!isDarkMode); savePreferences({isDarkMode: !isDarkMode});}} className="text-slate-400 hover:text-teal-500"><Icon name={isDarkMode ? 'sun' : 'moon'} size={14}/></button>
-                            <p className="text-[7px] font-black text-slate-400 uppercase">Synchronisé</p>
+                            <button onClick={() => {setIsDarkMode(!isDarkMode); savePreferences({isDarkMode: !isDarkMode});}} className="text-slate-400 hover:text-teal-500 transition-colors"><Icon name={isDarkMode ? 'sun' : 'moon'} size={14}/></button>
+                            <p className="text-[7px] font-black text-slate-400 uppercase">Multi-Appareils</p>
                         </div>
                     </nav>
 
-                    {/* Mobile Footer */}
+                    {/* Footer Mobile */}
                     <nav className={`md:hidden fixed bottom-0 left-0 right-0 z-50 h-14 flex items-center justify-around border-t backdrop-blur-xl ${isDarkMode ? 'bg-slate-900/95 border-slate-800' : 'bg-white/95 border-slate-200'}`}>
                         {TABS.map(tab => (
                             <button key={tab.id} onClick={() => {setView(tab.id); if(tab.id !== 'add') resetForm();}} className={`flex flex-col items-center gap-0.5 ${view === tab.id ? 'text-teal-600 font-bold' : 'text-slate-400'}`}>
@@ -297,7 +284,7 @@
                     </nav>
 
                     <main className="p-4 md:p-6 max-w-[1200px] mx-auto text-left">
-                        <header className="mb-6 flex flex-col md:flex-row md:items-center justify-between gap-4">
+                        <header className="mb-6 flex flex-col md:flex-row md:items-center justify-between gap-4 text-left">
                             <div>
                                 <div className="flex items-center gap-2 mb-2"><span className="h-px w-6 bg-teal-500"></span><span className="text-teal-600 font-bold text-[9px] uppercase tracking-[0.3em]">PILOTAGE CLOUD</span></div>
                                 <div className="flex items-center gap-4">
@@ -316,7 +303,7 @@
                         {(view === 'monthly' || view === 'annual') && (
                             <div className="space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-500">
                                 <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4 text-left">
-                                    <div className={`p-4 rounded-xl border ${isDarkMode ? 'bg-slate-900 border-slate-800 shadow-teal-500/5' : 'bg-white border-slate-100 shadow-sm'}`}>
+                                    <div className={`p-4 rounded-xl border ${isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-100 shadow-sm'}`}>
                                         <p className="text-[9px] font-bold text-slate-400 uppercase mb-1">CA Encaissé</p>
                                         <p className="text-xl font-black text-teal-600 tracking-tighter">{activeStats.caEncaisse.toLocaleString()}€</p>
                                     </div>
@@ -325,8 +312,8 @@
                                         <p className="text-xl font-black text-rose-500 tracking-tighter">{activeStats.impayes.toLocaleString()}€</p>
                                     </div>
                                     <div className={`p-4 rounded-xl border ${isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-100 shadow-sm'}`}>
-                                        <p className="text-[9px] font-bold text-slate-400 uppercase mb-1">Dépenses</p>
-                                        <p className="text-xl font-black text-slate-500 tracking-tighter">{activeStats.totalExpenses.toLocaleString()}€</p>
+                                        <p className="text-[9px] font-bold text-slate-400 uppercase mb-1">Total Frais</p>
+                                        <p className="text-xl font-black text-rose-400 tracking-tighter">{activeStats.totalExpenses.toLocaleString()}€</p>
                                     </div>
                                     <div className={`p-4 rounded-xl border shadow-lg ${isDarkMode ? 'bg-teal-600 border-teal-500' : 'bg-teal-600 border-teal-500 text-white'}`}>
                                         <p className="text-[9px] font-bold text-teal-100/70 uppercase mb-1">Profit Net</p>
@@ -338,53 +325,9 @@
                                     </div>
                                 </div>
 
-                                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-left">
-                                    <div className={`p-5 rounded-2xl border ${isDarkMode ? 'bg-slate-900 border-slate-800 shadow-teal-900/5' : 'bg-white border-slate-100 shadow-sm'}`}>
-                                        <div className="flex justify-between items-center mb-6">
-                                            <h3 className="text-xs font-black italic flex items-center gap-2">
-                                                <Icon name="landmark" size={14} className="text-teal-500" /> <span className="text-teal-500 uppercase tracking-tight">Paiements bancaires</span>
-                                            </h3>
-                                            <span className="text-lg font-black text-teal-500">{activeStats.digitalSum.toLocaleString()}€</span>
-                                        </div>
-                                        <div className="space-y-4">
-                                            {activeStats.digitalBreakdown.length > 0 ? activeStats.digitalBreakdown.map((m, i) => (
-                                                <div key={i} className="space-y-1">
-                                                    <div className="flex justify-between text-[10px] font-bold uppercase">
-                                                        <span className="text-slate-400">{m.name}</span><span>{m.value}€</span>
-                                                    </div>
-                                                    <div className="h-1 w-full bg-slate-500/10 rounded-full overflow-hidden">
-                                                        <div className="h-full bg-teal-500" style={{width: `${(m.value/(activeStats.digitalSum || 1))*100}%`}}></div>
-                                                    </div>
-                                                </div>
-                                            )) : <p className="text-[10px] text-slate-500 italic text-center py-4">Aucun flux</p>}
-                                        </div>
-                                    </div>
-                                    <div className={`p-5 rounded-2xl border ${isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-100 shadow-sm'}`}>
-                                        <div className="flex justify-between items-center mb-6">
-                                            <h3 className="text-xs font-black italic flex items-center gap-2">
-                                                <Icon name="banknote" size={14} className="text-amber-500" /> <span className="text-amber-500 uppercase tracking-tight">Paiement en espèce</span>
-                                            </h3>
-                                            <span className="text-lg font-black text-amber-500">{activeStats.physicalSum.toLocaleString()}€</span>
-                                        </div>
-                                        <div className="space-y-4">
-                                            {activeStats.physicalBreakdown.length > 0 ? activeStats.physicalBreakdown.map((m, i) => (
-                                                <div key={i} className="space-y-1">
-                                                    <div className="flex justify-between text-[10px] font-bold uppercase">
-                                                        <span className="text-slate-400">{m.name}</span><span>{m.value}€</span>
-                                                    </div>
-                                                    <div className="h-1 w-full bg-slate-500/10 rounded-full overflow-hidden">
-                                                        <div className="h-full bg-amber-500" style={{width: `${(m.value/(activeStats.physicalSum || 1))*100}%`}}></div>
-                                                    </div>
-                                                </div>
-                                            )) : <p className="text-[10px] text-slate-500 italic text-center py-4">Aucun flux</p>}
-                                        </div>
-                                    </div>
-                                </div>
-
-                                <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 pb-12 text-left">
-                                    {/* Graphiques avec Catégories et Chiffres explicites */}
+                                <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 pb-12">
                                     <div className={`p-4 rounded-xl border ${isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-100'}`}>
-                                        <h3 className="text-[10px] font-black uppercase mb-4 text-slate-400 tracking-widest italic">Mobilité (Dossiers)</h3>
+                                        <h3 className="text-[10px] font-black uppercase mb-4 text-slate-400 tracking-widest italic text-left">Mobilité (Dossiers)</h3>
                                         <div className="h-[220px]">
                                             <ResponsiveContainer width="100%" height="100%">
                                                 <PieChart margin={{ top: 20, bottom: 20 }}>
@@ -397,7 +340,7 @@
                                         </div>
                                     </div>
                                     <div className={`p-4 rounded-xl border ${isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-100'}`}>
-                                        <h3 className="text-[10px] font-black uppercase mb-4 text-slate-400 tracking-widest italic">Prestations (CA)</h3>
+                                        <h3 className="text-[10px] font-black uppercase mb-4 text-slate-400 tracking-widest italic text-left">Prestations (CA)</h3>
                                         <div className="h-[220px]">
                                             <ResponsiveContainer width="100%" height="100%">
                                                 <PieChart margin={{ top: 20, bottom: 20 }}>
@@ -410,15 +353,13 @@
                                         </div>
                                     </div>
                                     <div className={`p-4 rounded-xl border ${isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-100'}`}>
-                                        <h3 className="text-[10px] font-black uppercase mb-4 text-slate-400 tracking-widest italic">CA vs Dépenses ({selectedYear})</h3>
+                                        <h3 className="text-[10px] font-black uppercase mb-4 text-slate-400 tracking-widest italic text-left">CA vs Dépenses ({selectedYear})</h3>
                                         <div className="h-[220px]">
                                             <ResponsiveContainer width="100%" height="100%">
                                                 <BarChart data={stats.evolution || []} margin={{top: 30, right: 10, left: -20, bottom: 0}}>
                                                     <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={isDarkMode ? '#334155' : '#f1f5f9'} />
                                                     <XAxis dataKey="name" fontSize={8} tick={{fill: chartTextColor}} axisLine={false} tickLine={false} />
-                                                    <Bar dataKey="ca" name="CA" fill="#0d9488" radius={[4,4,0,0]} barSize={10}>
-                                                        <LabelList dataKey="ca" position="top" offset={10} style={{fill: labelColor, fontSize: 8, fontWeight: 900}} formatter={v => v > 0 ? `${v}€` : ''} />
-                                                    </Bar>
+                                                    <Bar dataKey="ca" name="CA" fill="#0d9488" radius={[4,4,0,0]} barSize={10}><LabelList dataKey="ca" position="top" offset={10} style={{fill: labelColor, fontSize: 8, fontWeight: 900}} formatter={v => v > 0 ? `${v}€` : ''} /></Bar>
                                                     <Bar dataKey="dep" name="Dépenses" fill="#f43f5e" radius={[4,4,0,0]} barSize={10} />
                                                     <Tooltip cursor={{fill: isDarkMode ? '#ffffff05' : '#00000005'}} contentStyle={{backgroundColor: isDarkMode ? '#1e293b' : '#fff', border: 'none', borderRadius: '10px', fontSize: '10px'}}/>
                                                 </BarChart>
@@ -435,25 +376,44 @@
                                     <table className="w-full text-left text-[11px]">
                                         <thead className={isDarkMode ? 'bg-slate-800' : 'bg-slate-50'}>
                                             <tr className="uppercase tracking-widest text-slate-500 font-bold">
-                                                <th className="p-4">Client</th>
+                                                <th className="p-4">Type / Identité</th>
                                                 <th className="p-4 text-center">Statut</th>
-                                                <th className="p-4 text-right">CA / Frais</th>
+                                                <th className="p-4 text-right">Montant / Détail</th>
                                                 <th className="p-4 text-right">Actions</th>
                                             </tr>
                                         </thead>
                                         <tbody className={`divide-y ${isDarkMode ? 'divide-slate-800' : 'divide-slate-100'}`}>
                                             {(sessions || []).map(s => (
-                                                <tr key={s.id} onClick={() => setViewingSession(s)} className={`${s.isCancelled ? 'opacity-40' : (isDarkMode ? 'hover:bg-white/5' : 'hover:bg-slate-50')} transition-colors cursor-pointer group`}>
-                                                    <td className="p-4"><p className="font-bold text-xs">{s.client}</p><p className="text-[9px] font-normal text-slate-500">{s.date} • {s.type}</p></td>
-                                                    <td className="p-4 text-center">
-                                                        <button onClick={(e) => togglePaid(e, s.id, s.isPaid)} className={`px-3 py-1 rounded-full text-[9px] font-black uppercase shadow-sm ${s.isPaid ? 'bg-teal-500 text-white' : 'bg-rose-500 text-white'}`}>{s.isPaid ? 'Payé' : 'À payer'}</button>
+                                                <tr key={s.id} onClick={() => setViewingSession(s)} className={`${s.isCancelled ? 'opacity-40' : (isDarkMode ? 'hover:bg-white/5' : 'hover:bg-slate-50')} transition-colors cursor-pointer group text-left`}>
+                                                    <td className="p-4">
+                                                        <div className="flex items-center gap-3">
+                                                            <div className={`p-2 rounded-lg ${s.entryType === 'expense' ? 'bg-rose-500/10 text-rose-500' : 'bg-teal-500/10 text-teal-500'}`}>
+                                                                <Icon name={s.entryType === 'expense' ? 'receipt' : 'camera'} size={14}/>
+                                                            </div>
+                                                            <div>
+                                                                <p className="font-bold text-xs group-hover:text-teal-500 transition-colors">{s.entryType === 'expense' ? s.label : s.client}</p>
+                                                                <p className="text-[9px] font-normal text-slate-500">{s.date} • {s.entryType === 'expense' ? s.expenseCategory : s.type}</p>
+                                                            </div>
+                                                        </div>
                                                     </td>
-                                                    <td className="p-4 text-right font-black text-xs"><span className="text-teal-600">{s.price}€</span><br/><span className="text-rose-500 font-normal text-[9px]">{s.expenses ? `-${s.expenses}€` : '-'}</span></td>
+                                                    <td className="p-4 text-center">
+                                                        {s.entryType !== 'expense' ? (
+                                                            <button onClick={(e) => togglePaid(e, s.id, s.isPaid)} className={`px-3 py-1 rounded-full text-[9px] font-black uppercase shadow-sm ${s.isPaid ? 'bg-teal-500 text-white' : 'bg-rose-500 text-white'}`}>{s.isPaid ? 'Payé' : 'À payer'}</button>
+                                                        ) : (
+                                                            <span className="text-[9px] font-black uppercase text-slate-400 tracking-tighter">Dépense Pro</span>
+                                                        )}
+                                                    </td>
+                                                    <td className="p-4 text-right font-black text-xs">
+                                                        <span className={s.entryType === 'expense' ? 'text-rose-500' : 'text-teal-600'}>{s.entryType === 'expense' ? '-' : ''}{s.price}€</span>
+                                                        <br/>
+                                                        <span className="text-slate-500 font-normal text-[9px] italic">
+                                                            {s.entryType === 'expense' ? 'Frais fixes' : (s.expenses ? `Frais: -${s.expenses}€` : 'Sans frais')}
+                                                        </span>
+                                                    </td>
                                                     <td className="p-4">
                                                         <div className="flex gap-2 justify-end">
-                                                            <button onClick={(e) => { e.stopPropagation(); setViewingSession(s); }} className="p-1.5 text-slate-400 hover:text-teal-500"><Icon name="eye" size={14}/></button>
-                                                            <button onClick={(e) => startEdit(e, s)} className="p-1.5 text-slate-400 hover:text-amber-500"><Icon name="edit-3" size={14}/></button>
-                                                            <button onClick={(e) => { e.stopPropagation(); setDeleteConfirmId(s.id); }} className="p-1.5 text-slate-400 hover:text-rose-500"><Icon name="trash-2" size={14}/></button>
+                                                            <button onClick={(e) => startEdit(e, s)} className="p-1.5 text-slate-400 hover:text-amber-500 transition-colors"><Icon name="edit-3" size={14}/></button>
+                                                            <button onClick={(e) => { e.stopPropagation(); setDeleteConfirmId(s.id); }} className="p-1.5 text-slate-400 hover:text-rose-500 transition-colors"><Icon name="trash-2" size={14}/></button>
                                                         </div>
                                                     </td>
                                                 </tr>
@@ -466,39 +426,47 @@
 
                         {view === 'add' && (
                             <div className={`max-w-xl mx-auto p-6 rounded-2xl border animate-in zoom-in-95 duration-300 ${isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-100 shadow-xl'}`}>
+                                <div className="flex gap-1 p-1 bg-slate-500/10 rounded-xl mb-6">
+                                    <button onClick={() => { setEntryType('shooting'); resetForm(); }} className={`flex-1 py-2 rounded-lg text-[10px] font-black uppercase transition-all ${entryType === 'shooting' ? 'bg-teal-600 text-white shadow-md' : 'text-slate-500'}`}>Séance Photo</button>
+                                    <button onClick={() => { setEntryType('expense'); resetForm(); }} className={`flex-1 py-2 rounded-lg text-[10px] font-black uppercase transition-all ${entryType === 'expense' ? 'bg-rose-500 text-white shadow-md' : 'text-slate-500'}`}>Dépense Pro</button>
+                                </div>
+
                                 <form onSubmit={handleFormSubmit} className="space-y-4 text-left">
-                                    <div className="space-y-1"><label className="text-[9px] font-black uppercase text-slate-500 ml-1">Client</label><input type="text" placeholder="Nom..." required className={`w-full p-3 rounded-lg border-none outline-none font-bold text-sm ${isDarkMode ? 'bg-slate-800 text-white' : 'bg-slate-100 text-slate-900'}`} value={formData.client} onChange={e => setFormData({...formData, client: e.target.value})} /></div>
-                                    <div className="grid grid-cols-2 gap-4 text-left">
-                                        <div className="space-y-1"><label className="text-[9px] font-black uppercase text-slate-500 ml-1">Date</label><input type="date" className={`w-full p-3 rounded-lg border-none outline-none text-sm ${isDarkMode ? 'bg-slate-800 text-white' : 'bg-slate-100 text-slate-900'}`} value={formData.date} onChange={e => setFormData({...formData, date: e.target.value})} /></div>
-                                        <div className="space-y-1"><label className="text-[9px] font-black uppercase text-slate-500 ml-1">CA (€)</label><input type="number" required className={`w-full p-3 rounded-lg border-none outline-none font-black text-teal-600 text-sm ${isDarkMode ? 'bg-slate-800' : 'bg-slate-100'}`} value={formData.price} onChange={e => setFormData({...formData, price: e.target.value})} /></div>
-                                    </div>
-                                    <div className="grid grid-cols-2 gap-4 border-t border-slate-500/10 pt-4 text-left">
-                                        <div className="space-y-1"><label className="text-[9px] font-black uppercase text-rose-500 ml-1 font-bold">Dépenses (€)</label><input type="number" placeholder="0" className={`w-full p-3 rounded-lg border-none outline-none font-bold text-rose-500 text-sm ${isDarkMode ? 'bg-slate-800' : 'bg-slate-100'}`} value={formData.expenses} onChange={e => setFormData({...formData, expenses: e.target.value})} /></div>
-                                        <div className="space-y-1"><label className="text-[9px] font-black uppercase text-teal-500 ml-1 font-bold">Temps total (h)</label><input type="number" placeholder="0" step="0.5" className={`w-full p-3 rounded-lg border-none outline-none font-bold text-teal-600 text-sm ${isDarkMode ? 'bg-slate-800' : 'bg-slate-100'}`} value={formData.hours} onChange={e => setFormData({...formData, hours: e.target.value})} /></div>
-                                    </div>
-                                    <div className="grid grid-cols-2 gap-4 text-left">
-                                        <div className="space-y-1">
-                                            <label className="text-[9px] font-black uppercase text-slate-500 ml-1">Prestation</label>
-                                            <select className={`w-full p-3 rounded-lg border-none outline-none text-sm font-bold ${isDarkMode ? 'bg-slate-800 text-white' : 'bg-slate-100 text-slate-900'}`} value={formData.type} onChange={e => setFormData({...formData, type: e.target.value})}>{(shootingTypes || []).map(t => <option key={t} value={t}>{t}</option>)}</select>
+                                    {entryType === 'shooting' ? (
+                                        <>
+                                            <div className="space-y-1"><label className="text-[9px] font-black uppercase text-slate-500 ml-1">Client</label><input type="text" placeholder="Identité..." required className={`w-full p-3 rounded-lg border-none outline-none font-bold text-sm ${isDarkMode ? 'bg-slate-800 text-white' : 'bg-slate-100 text-slate-900'}`} value={formData.client} onChange={e => setFormData({...formData, client: e.target.value})} /></div>
+                                            <div className="grid grid-cols-2 gap-4 text-left">
+                                                <div className="space-y-1"><label className="text-[9px] font-black uppercase text-slate-500 ml-1">Date</label><input type="date" className={`w-full p-3 rounded-lg border-none outline-none text-sm ${isDarkMode ? 'bg-slate-800 text-white' : 'bg-slate-100 text-slate-900'}`} value={formData.date} onChange={e => setFormData({...formData, date: e.target.value})} /></div>
+                                                <div className="space-y-1"><label className="text-[9px] font-black uppercase text-slate-500 ml-1">CA (€)</label><input type="number" required className={`w-full p-3 rounded-lg border-none outline-none font-black text-teal-600 text-sm ${isDarkMode ? 'bg-slate-800' : 'bg-slate-100'}`} value={formData.price} onChange={e => setFormData({...formData, price: e.target.value})} /></div>
+                                            </div>
+                                            <div className="grid grid-cols-2 gap-4 border-t border-slate-500/10 pt-4 text-left">
+                                                <div className="space-y-1"><label className="text-[9px] font-black uppercase text-rose-500 ml-1 font-bold">Frais Séance (€)</label><input type="number" placeholder="0" className={`w-full p-3 rounded-lg border-none outline-none font-bold text-rose-500 text-sm ${isDarkMode ? 'bg-slate-800' : 'bg-slate-100'}`} value={formData.expenses} onChange={e => setFormData({...formData, expenses: e.target.value})} /></div>
+                                                <div className="space-y-1"><label className="text-[9px] font-black uppercase text-teal-500 ml-1 font-bold">Temps total (h)</label><input type="number" placeholder="0" step="0.5" className={`w-full p-3 rounded-lg border-none outline-none font-bold text-teal-600 text-sm ${isDarkMode ? 'bg-slate-800' : 'bg-slate-100'}`} value={formData.hours} onChange={e => setFormData({...formData, hours: e.target.value})} /></div>
+                                            </div>
+                                            <div className="grid grid-cols-2 gap-4 text-left">
+                                                <div className="space-y-1"><label className="text-[9px] font-black uppercase text-slate-500 ml-1">Prestation</label><select className={`w-full p-3 rounded-lg border-none outline-none text-sm font-bold ${isDarkMode ? 'bg-slate-800 text-white' : 'bg-slate-100 text-slate-900'}`} value={formData.type} onChange={e => setFormData({...formData, type: e.target.value})}>{(shootingTypes || []).map(t => <option key={t} value={t}>{t}</option>)}</select></div>
+                                                <div className="space-y-1"><label className="text-[9px] font-black uppercase text-slate-500 ml-1">Lieu</label><select className={`w-full p-3 rounded-lg border-none outline-none text-sm font-bold ${isDarkMode ? 'bg-slate-800 text-white' : 'bg-slate-100 text-slate-900'}`} value={formData.location} onChange={e => setFormData({...formData, location: e.target.value})}>{(locations || []).map(l => <option key={l} value={l}>{l}</option>)}</select></div>
+                                            </div>
+                                            <div className="space-y-1 text-left"><label className="text-[9px] font-black uppercase text-slate-500 ml-1">Règlement</label><select className={`w-full p-3 rounded-lg border-none outline-none text-sm font-bold ${isDarkMode ? 'bg-slate-800 text-white' : 'bg-slate-100 text-slate-900'}`} value={formData.paymentMethod} onChange={e => setFormData({...formData, paymentMethod: e.target.value})}>{(paymentMethods || []).map(m => <option key={m} value={m}>{m}</option>)}</select></div>
+                                        </>
+                                    ) : (
+                                        <>
+                                            <div className="space-y-1 text-left"><label className="text-[9px] font-black uppercase text-rose-500 ml-1">Libellé de la dépense</label><input type="text" placeholder="URSSAF, Adobe, Assurance..." required className={`w-full p-3 rounded-lg border-none outline-none font-bold text-sm ${isDarkMode ? 'bg-slate-800 text-white' : 'bg-slate-100 text-slate-900'}`} value={formData.label} onChange={e => setFormData({...formData, label: e.target.value})} /></div>
+                                            <div className="grid grid-cols-2 gap-4 text-left">
+                                                <div className="space-y-1"><label className="text-[9px] font-black uppercase text-slate-500 ml-1">Date</label><input type="date" className={`w-full p-3 rounded-lg border-none outline-none text-sm ${isDarkMode ? 'bg-slate-800 text-white' : 'bg-slate-100 text-slate-900'}`} value={formData.date} onChange={e => setFormData({...formData, date: e.target.value})} /></div>
+                                                <div className="space-y-1"><label className="text-[9px] font-black uppercase text-rose-500 ml-1 font-bold">Montant (€)</label><input type="number" required className={`w-full p-3 rounded-lg border-none outline-none font-black text-rose-500 text-sm ${isDarkMode ? 'bg-slate-800' : 'bg-slate-100'}`} value={formData.price} onChange={e => setFormData({...formData, price: e.target.value})} /></div>
+                                            </div>
+                                            <div className="space-y-1 text-left"><label className="text-[9px] font-black uppercase text-slate-500 ml-1">Catégorie</label><select className={`w-full p-3 rounded-lg border-none outline-none text-sm font-bold ${isDarkMode ? 'bg-slate-800 text-white' : 'bg-slate-100 text-slate-900'}`} value={formData.expenseCategory} onChange={e => setFormData({...formData, expenseCategory: e.target.value})}>{(expenseCategories || []).map(cat => <option key={cat} value={cat}>{cat}</option>)}</select></div>
+                                        </>
+                                    )}
+                                    <div className="space-y-1 text-left"><label className="text-[9px] font-black uppercase text-slate-500 ml-1 italic">Notes</label><textarea placeholder="Observations..." className={`w-full p-3 rounded-lg border-none outline-none text-sm h-24 resize-none ${isDarkMode ? 'bg-slate-800 text-white' : 'bg-slate-100 text-slate-900'}`} value={formData.notes} onChange={e => setFormData({...formData, notes: e.target.value})}></textarea></div>
+                                    {entryType === 'shooting' && (
+                                        <div className="flex gap-4 p-3 bg-slate-500/5 rounded-lg border border-slate-500/10">
+                                            <label className="flex items-center gap-2 cursor-pointer text-[10px] font-black uppercase text-teal-500"><input type="checkbox" className="accent-teal-600" checked={formData.isPaid} onChange={e => setFormData({...formData, isPaid: e.target.checked})}/> Payé</label>
+                                            <label className="flex items-center gap-2 cursor-pointer text-[10px] font-black uppercase text-rose-500"><input type="checkbox" className="accent-rose-600" checked={formData.isCancelled} onChange={e => setFormData({...formData, isCancelled: e.target.checked})}/> Annulé</label>
                                         </div>
-                                        <div className="space-y-1">
-                                            <label className="text-[9px] font-black uppercase text-slate-500 ml-1">Lieu</label>
-                                            <select className={`w-full p-3 rounded-lg border-none outline-none text-sm font-bold ${isDarkMode ? 'bg-slate-800 text-white' : 'bg-slate-100 text-slate-900'}`} value={formData.location} onChange={e => setFormData({...formData, location: e.target.value})}>{(locations || []).map(l => <option key={l} value={l}>{l}</option>)}</select>
-                                        </div>
-                                    </div>
-                                    <div className="space-y-1 text-left">
-                                        <label className="text-[9px] font-black uppercase text-slate-500 ml-1">Règlement</label>
-                                        <select className={`w-full p-3 rounded-lg border-none outline-none text-sm font-bold ${isDarkMode ? 'bg-slate-800 text-white' : 'bg-slate-100 text-slate-900'}`} value={formData.paymentMethod} onChange={e => setFormData({...formData, paymentMethod: e.target.value})}>{(paymentMethods || []).map(m => <option key={m} value={m}>{m}</option>)}</select>
-                                    </div>
-                                    <div className="space-y-1 text-left">
-                                        <label className="text-[9px] font-black uppercase text-slate-500 ml-1 italic">Notes</label>
-                                        <textarea placeholder="Observations..." className={`w-full p-3 rounded-lg border-none outline-none text-sm h-24 resize-none ${isDarkMode ? 'bg-slate-800 text-white' : 'bg-slate-100 text-slate-900'}`} value={formData.notes} onChange={e => setFormData({...formData, notes: e.target.value})}></textarea>
-                                    </div>
-                                    <div className="flex gap-4 p-3 bg-slate-500/5 rounded-lg border border-slate-500/10">
-                                        <label className="flex items-center gap-2 cursor-pointer text-[10px] font-black uppercase text-teal-500"><input type="checkbox" className="accent-teal-600" checked={formData.isPaid} onChange={e => setFormData({...formData, isPaid: e.target.checked})}/> Payé</label>
-                                        <label className="flex items-center gap-2 cursor-pointer text-[10px] font-black uppercase text-rose-500"><input type="checkbox" className="accent-rose-600" checked={formData.isCancelled} onChange={e => setFormData({...formData, isCancelled: e.target.checked})}/> Annulé</label>
-                                    </div>
-                                    <button type="submit" className="w-full bg-teal-600 text-white p-4 rounded-xl font-black uppercase text-xs shadow-lg shadow-teal-600/30">{editingId ? "Mettre à jour" : "Confirmer l'encodage"}</button>
+                                    )}
+                                    <button type="submit" className={`w-full ${entryType === 'shooting' ? 'bg-teal-600' : 'bg-rose-500'} text-white p-4 rounded-xl font-black uppercase text-xs shadow-lg`}>{editingId ? "Mettre à jour" : "Confirmer l'encodage"}</button>
                                 </form>
                             </div>
                         )}
@@ -519,6 +487,7 @@
                                 {[
                                     { title: 'Lieux', data: locations, set: setLocations, field: 'locations', icon: 'map-pin' },
                                     { title: 'Prestations', data: shootingTypes, set: setShootingTypes, field: 'shootingTypes', icon: 'camera' },
+                                    { title: 'Dépenses Pro (Types)', data: expenseCategories, set: setExpenseCategories, field: 'expenseCategories', icon: 'receipt' },
                                     { title: 'Règlements', data: paymentMethods, set: setPaymentMethods, field: 'paymentMethods', icon: 'wallet-2' }
                                 ].map((section, idx) => (
                                     <div key={idx} className={`p-6 rounded-2xl border ${isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-100 shadow-sm'}`}>
@@ -531,11 +500,9 @@
                                                     <button onClick={() => { const next = section.data.filter((_, j) => j !== i); section.set(next); savePreferences({[section.field]: next}); }} className="p-1.5 text-slate-300 hover:text-rose-500 transition-all opacity-0 group-hover:opacity-100"><Icon name="x" size={14}/></button>
                                                 </div>
                                             ))}
-                                            <div className="pt-2">
-                                                <input id={`new-${section.field}`} placeholder="Ajouter..." className={`w-full p-2 rounded-lg border border-dashed border-slate-300 outline-none font-bold text-[11px] ${isDarkMode ? 'bg-slate-800 border-slate-700' : 'bg-white'}`} onKeyDown={(e) => {
-                                                    if(e.key === 'Enter' && e.target.value) { const next = [...(section.data || []), e.target.value]; section.set(next); savePreferences({[section.field]: next}); e.target.value = ''; }
-                                                }} />
-                                            </div>
+                                            <div className="pt-2"><input placeholder="Ajouter..." className={`w-full p-2 rounded-lg border border-dashed border-slate-300 outline-none font-bold text-[11px] ${isDarkMode ? 'bg-slate-800' : 'bg-white'}`} onKeyDown={(e) => {
+                                                if(e.key === 'Enter' && e.target.value) { const next = [...(section.data || []), e.target.value]; section.set(next); savePreferences({[section.field]: next}); e.target.value = ''; }
+                                            }} /></div>
                                         </div>
                                     </div>
                                 ))}
@@ -545,22 +512,19 @@
 
                     {/* MODALE DÉTAILS */}
                     {viewingSession && (
-                        <div className="fixed inset-0 z-[300] flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-md animate-in fade-in duration-300">
-                            <div className={`relative max-w-lg w-full rounded-3xl p-6 shadow-2xl overflow-hidden border ${isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-200'}`}>
+                        <div className="fixed inset-0 z-[300] flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-md animate-in fade-in duration-300 text-left">
+                            <div className={`relative max-w-lg w-full rounded-3xl p-6 shadow-2xl border ${isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-200'}`}>
                                 <button onClick={() => setViewingSession(null)} className="absolute top-4 right-4 p-2 rounded-full bg-slate-500/10 hover:bg-rose-500/20 hover:text-rose-500 transition-all"><Icon name="x" size={18}/></button>
-                                <div className="flex items-center gap-4 mb-6 text-left">
-                                    <div className="p-3 bg-teal-600 rounded-2xl shadow-lg text-white"><Icon name="user" size={24}/></div>
-                                    <div>
-                                        <h3 className="text-xl font-black italic leading-none">{viewingSession.client}</h3>
-                                        <p className="text-[10px] font-bold text-teal-600 uppercase mt-1">{viewingSession.type} • {viewingSession.date}</p>
-                                    </div>
+                                <div className="flex items-center gap-4 mb-6">
+                                    <div className={`p-3 rounded-2xl shadow-lg text-white ${viewingSession.entryType === 'expense' ? 'bg-rose-500' : 'bg-teal-600'}`}><Icon name={viewingSession.entryType === 'expense' ? 'receipt' : 'user'} size={24}/></div>
+                                    <div><h3 className="text-xl font-black italic leading-none">{viewingSession.entryType === 'expense' ? viewingSession.label : viewingSession.client}</h3><p className="text-[10px] font-bold text-slate-500 uppercase mt-1">{viewingSession.date}</p></div>
                                 </div>
-                                <div className="grid grid-cols-2 gap-3 mb-6 text-left">
-                                    <div className={`p-4 rounded-2xl border ${isDarkMode ? 'bg-slate-800/50' : 'bg-slate-50'}`}><p className="text-[8px] font-black text-slate-400 uppercase mb-1">Honoraires</p><p className="text-xl font-black text-teal-600">{viewingSession.price}€</p></div>
-                                    <div className={`p-4 rounded-2xl border ${isDarkMode ? 'bg-slate-800/50' : 'bg-slate-50'}`}><p className="text-[8px] font-black text-slate-400 uppercase mb-1">Frais</p><p className="text-xl font-black text-rose-500">{viewingSession.expenses || 0}€</p></div>
+                                <div className="grid grid-cols-2 gap-3 mb-6">
+                                    <div className={`p-4 rounded-2xl border ${isDarkMode ? 'bg-slate-800/50' : 'bg-slate-50'}`}><p className="text-[8px] font-black text-slate-400 uppercase mb-1">Montant</p><p className={`text-xl font-black ${viewingSession.entryType === 'expense' ? 'text-rose-500' : 'text-teal-600'}`}>{viewingSession.price}€</p></div>
+                                    {viewingSession.entryType !== 'expense' && <div className={`p-4 rounded-2xl border ${isDarkMode ? 'bg-slate-800/50' : 'bg-slate-50'}`}><p className="text-[8px] font-black text-slate-400 uppercase mb-1">Frais Séance</p><p className="text-xl font-black text-rose-500">{viewingSession.expenses || 0}€</p></div>}
                                 </div>
-                                <div className="space-y-4 text-left">
-                                    <p className="text-[9px] font-black uppercase text-slate-400 tracking-widest">Notes de la séance</p>
+                                <div className="space-y-4">
+                                    <p className="text-[9px] font-black uppercase text-slate-400 tracking-widest italic">Notes</p>
                                     <div className={`p-4 rounded-2xl min-h-[100px] max-h-[200px] overflow-y-auto text-sm leading-relaxed ${isDarkMode ? 'bg-slate-800 text-slate-300' : 'bg-slate-50 text-slate-600'}`}>
                                         {viewingSession.notes ? viewingSession.notes : <span className="italic opacity-50">Aucune note.</span>}
                                     </div>
@@ -579,9 +543,9 @@
                     {deleteConfirmId && (
                         <div className="fixed inset-0 z-[400] flex items-center justify-center p-4 bg-slate-950/90 backdrop-blur-sm animate-in fade-in duration-200 text-left">
                             <div className={`p-6 rounded-3xl max-w-[280px] w-full shadow-2xl ${isDarkMode ? 'bg-slate-900 border border-slate-800' : 'bg-white'}`}>
-                                <h3 className="font-black text-xs uppercase mb-4 flex items-center gap-2"><Icon name="alert-triangle" className="text-rose-500"/> Supprimer ?</h3>
+                                <h3 className="font-black text-xs uppercase mb-4 flex items-center gap-2 text-rose-500"><Icon name="alert-triangle"/> Supprimer ?</h3>
                                 <div className="flex gap-2">
-                                    <button onClick={() => setDeleteConfirmId(null)} className="flex-1 py-2 rounded-lg font-bold text-[10px] bg-slate-100">Annuler</button>
+                                    <button onClick={() => setDeleteConfirmId(null)} className="flex-1 py-2 rounded-lg font-bold text-[10px] bg-slate-100 text-slate-600">Annuler</button>
                                     <button onClick={() => deleteSession(deleteConfirmId)} className="flex-1 py-2 rounded-lg bg-rose-600 text-white font-bold text-[10px]">Confirmer</button>
                                 </div>
                             </div>
