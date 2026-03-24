@@ -1,0 +1,579 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ivana Bardunov - Studio Tracker</title>
+    <!-- Bibliothèques - Chargement Cloud -->
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/prop-types@15.8.1/prop-types.min.js"></script>
+    <script src="https://unpkg.com/recharts@2.12.7/umd/Recharts.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    
+    <!-- SDK Firebase -->
+    <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-auth-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore-compat.js"></script>
+
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;700;900&display=swap');
+        body { font-family: 'Inter', sans-serif; transition: background-color 0.3s; overflow-x: hidden; }
+        .recharts-cartesian-grid-horizontal line { stroke-opacity: 0.1; }
+        textarea::-webkit-scrollbar { width: 4px; }
+        textarea::-webkit-scrollbar-thumb { background: #0d9488; border-radius: 10px; }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, PieChart, Pie, Cell, LabelList } = window.Recharts;
+        const { useState, useMemo, useEffect } = React;
+
+        // --- INITIALISATION FIREBASE ---
+        const firebaseConfig = JSON.parse(__firebase_config);
+        firebase.initializeApp(firebaseConfig);
+        const auth = firebase.auth();
+        const db = firebase.firestore();
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'ivana-studio-tracker';
+
+        const Icon = ({ name, size = 18, className = "" }) => {
+            useEffect(() => { if (window.lucide) window.lucide.createIcons(); }, [name]);
+            return <i data-lucide={name} style={{ width: size, height: size }} className={className}></i>;
+        };
+
+        const TABS = [
+            { id: 'monthly', label: 'Mensuel', icon: 'calendar' },
+            { id: 'annual', label: 'Annuel', icon: 'bar-chart-3' },
+            { id: 'list', label: 'Encodages', icon: 'list' },
+            { id: 'settings', label: 'Réglages', icon: 'settings' },
+        ];
+
+        const LIGHT_COLORS = ['#0d9488', '#1e293b', '#6366f1', '#f59e0b', '#ec4899', '#8b5cf6', '#10b981', '#ef4444'];
+        const DARK_COLORS = ['#2dd4bf', '#94a3b8', '#818cf8', '#fbbf24', '#f472b6', '#a78bfa', '#34d399', '#f87171'];
+        const DIGITAL_KEYS = ["Virement", "Lydia", "Paylib", "Carte", "Stripe", "PayPal", "Bancaire"];
+
+        function App() {
+            const [user, setUser] = useState(null);
+            const [view, setView] = useState('monthly');
+            const [isDarkMode, setIsDarkMode] = useState(false);
+            const [zoom, setZoom] = useState(100);
+            const [currentDate, setCurrentDate] = useState(new Date());
+            const [sessions, setSessions] = useState([]);
+            
+            // Réglages par défaut robustes
+            const [shootingTypes, setShootingTypes] = useState(["Portrait", "Mariage", "Grossesse", "Bébé", "Évènement", "Corporate"]);
+            const [locations, setLocations] = useState(["Studio", "Extérieur", "Domicile"]);
+            const [paymentMethods, setPaymentMethods] = useState(["Virement", "Espèces", "Lydia/Paylib", "Chèque"]);
+            
+            const [editingId, setEditingId] = useState(null);
+            const [deleteConfirmId, setDeleteConfirmId] = useState(null);
+            const [viewingSession, setViewingSession] = useState(null);
+
+            const [formData, setFormData] = useState({
+                date: new Date().toISOString().split('T')[0],
+                client: '', type: "Portrait", location: "Studio", modality: "Présentiel",
+                price: '', expenses: '', hours: '', isPaid: false, isCancelled: false, paymentMethod: "Virement", notes: ''
+            });
+
+            // 1. Authentification
+            useEffect(() => {
+                const initAuth = async () => {
+                    if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                        await auth.signInWithCustomToken(__initial_auth_token);
+                    } else {
+                        await auth.signInAnonymously();
+                    }
+                };
+                initAuth();
+                const unsubAuth = auth.onAuthStateChanged(setUser);
+                return () => unsubAuth();
+            }, []);
+
+            // 2. Synchronisation des données
+            useEffect(() => {
+                if (!user) return;
+
+                const collectionPath = `artifacts/${appId}/users/${user.uid}/shootings`;
+                const unsub = db.collection(collectionPath).onSnapshot(snapshot => {
+                    const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                    setSessions(data.sort((a, b) => new Date(b.date) - new Date(a.date)));
+                }, err => console.error("Firestore Error:", err));
+
+                const configPath = `artifacts/${appId}/users/${user.uid}/config/preferences`;
+                db.doc(configPath).onSnapshot(doc => {
+                    if (doc.exists) {
+                        const prefs = doc.data();
+                        if (Array.isArray(prefs.shootingTypes)) setShootingTypes(prefs.shootingTypes);
+                        if (Array.isArray(prefs.locations)) setLocations(prefs.locations);
+                        if (Array.isArray(prefs.paymentMethods)) setPaymentMethods(prefs.paymentMethods);
+                        if (prefs.isDarkMode !== undefined) setIsDarkMode(prefs.isDarkMode);
+                        if (prefs.zoom) setZoom(prefs.zoom);
+                    }
+                });
+
+                return () => unsub();
+            }, [user]);
+
+            useEffect(() => {
+                document.documentElement.style.fontSize = `${zoom * 0.9}%`;
+            }, [zoom]);
+
+            const savePreferences = async (newPrefs) => {
+                if (!user) return;
+                await db.doc(`artifacts/${appId}/users/${user.uid}/config/preferences`).set(newPrefs, { merge: true });
+            };
+
+            const handleFormSubmit = async (e) => {
+                e.preventDefault();
+                if (!user) return;
+                const data = { 
+                    ...formData, 
+                    price: Number(formData.price),
+                    expenses: Number(formData.expenses || 0),
+                    hours: Number(formData.hours || 0),
+                    updatedAt: Date.now()
+                };
+                const colRef = db.collection(`artifacts/${appId}/users/${user.uid}/shootings`);
+                if (editingId) {
+                    await colRef.doc(editingId).update(data);
+                } else {
+                    await colRef.add({ ...data, createdAt: Date.now() });
+                }
+                resetForm();
+                setView('list');
+            };
+
+            const togglePaid = async (e, id, currentStatus) => {
+                e.stopPropagation();
+                if (!user) return;
+                await db.doc(`artifacts/${appId}/users/${user.uid}/shootings/${id}`).update({ isPaid: !currentStatus });
+            };
+
+            const deleteSession = async (id) => {
+                if (!user) return;
+                await db.doc(`artifacts/${appId}/users/${user.uid}/shootings/${id}`).delete();
+                setDeleteConfirmId(null);
+            };
+
+            const resetForm = () => {
+                setEditingId(null);
+                setFormData({
+                    date: new Date().toISOString().split('T')[0],
+                    client: '', type: shootingTypes[0] || "Portrait", location: locations[0] || "Studio", modality: "Présentiel",
+                    price: '', expenses: '', hours: '', isPaid: false, isCancelled: false, paymentMethod: paymentMethods[0] || "Virement", notes: ''
+                });
+            };
+
+            const startEdit = (e, s) => { e.stopPropagation(); setEditingId(s.id); setFormData(s); setView('add'); };
+
+            const navigateMonth = (dir) => {
+                const d = new Date(currentDate);
+                d.setMonth(d.getMonth() + dir);
+                setCurrentDate(d);
+            };
+
+            const navigateYear = (dir) => {
+                const d = new Date(currentDate);
+                d.setFullYear(d.getFullYear() + dir);
+                setCurrentDate(d);
+            };
+
+            // --- CALCULS STATISTIQUES ---
+            const selectedMonthIdx = currentDate.getMonth();
+            const selectedYear = currentDate.getFullYear();
+            const selectedMonthLabel = currentDate.toLocaleString('fr-FR', { month: 'long', year: 'numeric' });
+
+            const stats = useMemo(() => {
+                const annualData = (sessions || []).filter(s => new Date(s.date).getFullYear() === selectedYear);
+                const monthlyData = annualData.filter(s => new Date(s.date).getMonth() === selectedMonthIdx);
+
+                const compute = (data) => {
+                    const caEncaisse = data.filter(s => s.isPaid && !s.isCancelled).reduce((acc, s) => acc + Number(s.price || 0), 0);
+                    const impayes = data.filter(s => !s.isPaid && !s.isCancelled).reduce((acc, s) => acc + Number(s.price || 0), 0);
+                    const totalExpenses = data.reduce((acc, s) => acc + Number(s.expenses || 0), 0);
+                    const totalHours = data.filter(s => !s.isCancelled).reduce((acc, s) => acc + Number(s.hours || 0), 0);
+                    const profitNet = caEncaisse - totalExpenses;
+                    const hourlyRate = totalHours > 0 ? caEncaisse / totalHours : 0;
+                    
+                    const byType = (shootingTypes || []).map(t => ({ 
+                        name: t, value: data.filter(s => s.type === t && !s.isCancelled).reduce((acc, s) => acc + Number(s.price || 0), 0) 
+                    })).filter(v => v.value > 0);
+
+                    const digitalSum = data.filter(s => DIGITAL_KEYS.some(key => s.paymentMethod?.includes(key)) && s.isPaid).reduce((acc, s) => acc + Number(s.price || 0), 0);
+                    const physicalSum = data.filter(s => !DIGITAL_KEYS.some(key => s.paymentMethod?.includes(key)) && s.isPaid).reduce((acc, s) => acc + Number(s.price || 0), 0);
+
+                    const digitalBreakdown = (paymentMethods || [])
+                        .filter(m => DIGITAL_KEYS.some(key => m.includes(key)))
+                        .map(m => ({ name: m, value: data.filter(s => s.paymentMethod === m && s.isPaid).reduce((acc, s) => acc + Number(s.price || 0), 0) }))
+                        .filter(v => v.value > 0);
+
+                    const physicalBreakdown = (paymentMethods || [])
+                        .filter(m => !DIGITAL_KEYS.some(key => m.includes(key)))
+                        .map(m => ({ name: m, value: data.filter(s => s.paymentMethod === m && s.isPaid).reduce((acc, s) => acc + Number(s.price || 0), 0) }))
+                        .filter(v => v.value > 0);
+
+                    const studioCount = data.filter(s => s.location === "Studio" && !s.isCancelled).length;
+                    const travelCount = data.filter(s => s.location !== "Studio" && !s.isCancelled).length;
+                    const logisticData = [
+                        { name: 'Studio', value: studioCount }, 
+                        { name: 'Déplacement', value: travelCount }
+                    ].filter(v => v.value > 0);
+
+                    return { caEncaisse, impayes, totalExpenses, profitNet, totalHours, hourlyRate, byType, digitalSum, physicalSum, digitalBreakdown, physicalBreakdown, logisticData };
+                };
+
+                const months = ["Jan", "Fév", "Mar", "Avr", "Mai", "Jun", "Jul", "Aoû", "Sep", "Oct", "Nov", "Déc"];
+                const monthlyEvolution = months.map((m, i) => {
+                    const monthSessions = annualData.filter(s => new Date(s.date).getMonth() === i);
+                    return {
+                        name: m, 
+                        ca: monthSessions.reduce((acc, s) => acc + Number(s.price || 0), 0),
+                        dep: monthSessions.reduce((acc, s) => acc + Number(s.expenses || 0), 0)
+                    };
+                });
+
+                return { monthly: compute(monthlyData), annual: compute(annualData), evolution: monthlyEvolution };
+            }, [sessions, shootingTypes, paymentMethods, selectedMonthIdx, selectedYear]);
+
+            const activeStats = view === 'monthly' ? stats.monthly : stats.annual;
+            const currentColors = isDarkMode ? DARK_COLORS : LIGHT_COLORS;
+            const chartTextColor = isDarkMode ? '#94a3b8' : '#64748b';
+            const labelColor = isDarkMode ? '#2dd4bf' : '#0d9488';
+
+            if (!user) return <div className="flex h-screen items-center justify-center bg-slate-50"><div className="animate-spin rounded-full h-12 w-12 border-b-2 border-teal-600"></div></div>;
+
+            return (
+                <div className={`min-h-screen pb-20 md:pb-0 ${isDarkMode ? 'bg-slate-950 text-slate-100' : 'bg-slate-50 text-slate-900'}`}>
+                    
+                    {/* Header Desktop */}
+                    <nav className={`hidden md:flex sticky top-0 z-50 h-14 items-center justify-between px-8 border-b backdrop-blur-md ${isDarkMode ? 'bg-slate-900/90 border-slate-800 shadow-slate-900/50' : 'bg-white/80 border-slate-200'} shadow-sm`}>
+                        <div className="flex items-center gap-3">
+                            <div className="bg-teal-600 p-1.5 rounded-lg shadow-lg"><Icon name="camera" className="text-white" size={16}/></div>
+                            <div className="flex flex-col text-left">
+                                <span className="text-base font-black tracking-tighter italic leading-none">Ivana Bardunov</span>
+                                <span className="text-[7px] font-bold text-teal-600 uppercase tracking-[0.2em]">CLOUD studio tracker</span>
+                            </div>
+                        </div>
+                        <div className={`flex items-center gap-1 p-1 rounded-lg ${isDarkMode ? 'bg-slate-800' : 'bg-slate-100'}`}>
+                            {TABS.map(tab => (
+                                <button key={tab.id} onClick={() => {setView(tab.id); if(tab.id !== 'add') resetForm();}} 
+                                    className={`flex items-center gap-2 px-3 py-1 rounded-md font-bold text-[11px] transition-all ${view === tab.id ? (isDarkMode ? 'text-teal-400 bg-slate-900' : 'text-teal-600 bg-white shadow-sm') : 'text-slate-500 hover:text-slate-700'}`}>
+                                    <Icon name={tab.icon} size={12} /> {tab.label}
+                                </button>
+                            ))}
+                        </div>
+                        <div className="text-right flex items-center gap-3">
+                            <button onClick={() => {setIsDarkMode(!isDarkMode); savePreferences({isDarkMode: !isDarkMode});}} className="text-slate-400 hover:text-teal-500"><Icon name={isDarkMode ? 'sun' : 'moon'} size={14}/></button>
+                            <p className="text-[7px] font-black text-slate-400 uppercase">Cloud Sync Active</p>
+                        </div>
+                    </nav>
+
+                    {/* Mobile Footer */}
+                    <nav className={`md:hidden fixed bottom-0 left-0 right-0 z-50 h-14 flex items-center justify-around border-t backdrop-blur-xl ${isDarkMode ? 'bg-slate-900/95 border-slate-800' : 'bg-white/95 border-slate-200'}`}>
+                        {TABS.map(tab => (
+                            <button key={tab.id} onClick={() => {setView(tab.id); if(tab.id !== 'add') resetForm();}} className={`flex flex-col items-center gap-0.5 ${view === tab.id ? 'text-teal-600 font-bold' : 'text-slate-400'}`}>
+                                <Icon name={tab.icon} size={18} />
+                                <span className="text-[7px] uppercase font-black">{tab.label}</span>
+                            </button>
+                        ))}
+                    </nav>
+
+                    <main className="p-4 md:p-6 max-w-[1200px] mx-auto text-left">
+                        <header className="mb-6 flex flex-col md:flex-row md:items-center justify-between gap-4">
+                            <div>
+                                <div className="flex items-center gap-2 mb-2"><span className="h-px w-6 bg-teal-500"></span><span className="text-teal-600 font-bold text-[9px] uppercase tracking-[0.3em]">SYNCHRONISATION ACTIVE</span></div>
+                                <div className="flex items-center gap-4">
+                                    {(view === 'monthly' || view === 'annual') && <button onClick={() => view === 'monthly' ? navigateMonth(-1) : navigateYear(-1)} className="p-1 hover:bg-teal-500/10 rounded-lg transition-all"><Icon name="chevron-left" className="text-teal-600"/></button>}
+                                    <h2 className="text-2xl font-black italic capitalize leading-tight">
+                                        {view === 'monthly' ? selectedMonthLabel : view === 'annual' ? `Bilan ${selectedYear}` : view === 'list' ? "Journal" : (editingId ? "Modification" : "Nouveau")}
+                                    </h2>
+                                    {(view === 'monthly' || view === 'annual') && <button onClick={() => view === 'monthly' ? navigateMonth(1) : navigateYear(1)} className="p-1 hover:bg-teal-500/10 rounded-lg transition-all"><Icon name="chevron-right" className="text-teal-600"/></button>}
+                                </div>
+                            </div>
+                            {(view === 'monthly' || view === 'annual') && (
+                                <button onClick={() => setCurrentDate(new Date())} className="px-3 py-1 bg-teal-600/10 text-teal-600 text-[9px] font-black uppercase rounded-full border border-teal-600/20">Aujourd'hui</button>
+                            )}
+                        </header>
+
+                        {(view === 'monthly' || view === 'annual') && (
+                            <div className="space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-500">
+                                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4 text-left">
+                                    <div className={`p-4 rounded-xl border ${isDarkMode ? 'bg-slate-900 border-slate-800 shadow-teal-500/5' : 'bg-white border-slate-100 shadow-sm'}`}>
+                                        <p className="text-[9px] font-bold text-slate-400 uppercase mb-1">CA Encaissé</p>
+                                        <p className="text-xl font-black text-teal-600 tracking-tighter">{activeStats.caEncaisse.toLocaleString()}€</p>
+                                    </div>
+                                    <div className={`p-4 rounded-xl border border-rose-500/20 ${isDarkMode ? 'bg-rose-950/20' : 'bg-rose-50/50'}`}>
+                                        <p className="text-[9px] font-bold text-rose-500 uppercase mb-1">En attente</p>
+                                        <p className="text-xl font-black text-rose-500 tracking-tighter">{activeStats.impayes.toLocaleString()}€</p>
+                                    </div>
+                                    <div className={`p-4 rounded-xl border ${isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-100 shadow-sm'}`}>
+                                        <p className="text-[9px] font-bold text-slate-400 uppercase mb-1">Dépenses</p>
+                                        <p className="text-xl font-black text-slate-500 tracking-tighter">{activeStats.totalExpenses.toLocaleString()}€</p>
+                                    </div>
+                                    <div className={`p-4 rounded-xl border shadow-lg ${isDarkMode ? 'bg-teal-600 border-teal-500' : 'bg-teal-600 border-teal-500 text-white'}`}>
+                                        <p className="text-[9px] font-bold text-teal-100/70 uppercase mb-1">Profit Net</p>
+                                        <p className="text-xl font-black tracking-tighter text-white">{activeStats.profitNet.toLocaleString()}€</p>
+                                    </div>
+                                    <div className={`p-4 rounded-xl border ${isDarkMode ? 'bg-slate-800 border-slate-700' : 'bg-slate-900 border-slate-800 text-white'}`}>
+                                        <p className="text-[9px] font-bold text-teal-400 uppercase mb-1 italic">Taux Horaire</p>
+                                        <p className="text-xl font-black tracking-tighter text-teal-400">{Math.round(activeStats.hourlyRate).toLocaleString()}€/h</p>
+                                    </div>
+                                </div>
+
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                    <div className={`p-5 rounded-2xl border ${isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-100'}`}>
+                                        <h3 className="text-xs font-black uppercase text-teal-500 mb-6 flex justify-between">
+                                            <span>Paiements Bancaires</span>
+                                            <span>{activeStats.digitalSum}€</span>
+                                        </h3>
+                                        <div className="space-y-4">
+                                            {activeStats.digitalBreakdown.length > 0 ? activeStats.digitalBreakdown.map((m, i) => (
+                                                <div key={i} className="space-y-1">
+                                                    <div className="flex justify-between text-[10px] font-bold uppercase">
+                                                        <span className="text-slate-400">{m.name}</span><span>{m.value}€</span>
+                                                    </div>
+                                                    <div className="h-1 w-full bg-slate-500/10 rounded-full overflow-hidden">
+                                                        <div className="h-full bg-teal-500" style={{width: `${(m.value/(activeStats.digitalSum || 1))*100}%`}}></div>
+                                                    </div>
+                                                </div>
+                                            )) : <p className="text-[10px] text-slate-500 italic text-center py-4">Aucun flux</p>}
+                                        </div>
+                                    </div>
+                                    <div className={`p-5 rounded-2xl border ${isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-100'}`}>
+                                        <h3 className="text-xs font-black uppercase text-amber-500 mb-6 flex justify-between">
+                                            <span>Paiements Espèce</span>
+                                            <span>{activeStats.physicalSum}€</span>
+                                        </h3>
+                                        <div className="space-y-4">
+                                            {activeStats.physicalBreakdown.length > 0 ? activeStats.physicalBreakdown.map((m, i) => (
+                                                <div key={i} className="space-y-1">
+                                                    <div className="flex justify-between text-[10px] font-bold uppercase">
+                                                        <span className="text-slate-400">{m.name}</span><span>{m.value}€</span>
+                                                    </div>
+                                                    <div className="h-1 w-full bg-slate-500/10 rounded-full overflow-hidden">
+                                                        <div className="h-full bg-amber-500" style={{width: `${(m.value/(activeStats.physicalSum || 1))*100}%`}}></div>
+                                                    </div>
+                                                </div>
+                                            )) : <p className="text-[10px] text-slate-500 italic text-center py-4">Aucun flux</p>}
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 pb-12">
+                                    <div className={`p-4 rounded-xl border ${isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-100'}`}>
+                                        <h3 className="text-[10px] font-black uppercase mb-4 text-slate-400 tracking-widest italic">Mobilité (Dossiers)</h3>
+                                        <div className="h-[220px]">
+                                            <ResponsiveContainer width="100%" height="100%">
+                                                <PieChart margin={{ top: 20, bottom: 20 }}>
+                                                    <Pie data={activeStats.logisticData || []} innerRadius={45} outerRadius={65} paddingAngle={5} dataKey="value" stroke="none" label={({name, value}) => `${name}: ${value} dossiers`}>
+                                                        <Cell fill="#0d9488" strokeWidth={2} stroke={isDarkMode ? '#0f172a' : '#fff'} /><Cell fill={isDarkMode ? '#334155' : '#94a3b8'} strokeWidth={2} stroke={isDarkMode ? '#0f172a' : '#fff'} />
+                                                    </Pie>
+                                                    <Tooltip contentStyle={{backgroundColor: isDarkMode ? '#1e293b' : '#fff', border: 'none', borderRadius: '10px', fontSize: '10px'}}/>
+                                                </PieChart>
+                                            </ResponsiveContainer>
+                                        </div>
+                                    </div>
+                                    <div className={`p-4 rounded-xl border ${isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-100'}`}>
+                                        <h3 className="text-[10px] font-black uppercase mb-4 text-slate-400 tracking-widest italic">Prestations (CA)</h3>
+                                        <div className="h-[220px]">
+                                            <ResponsiveContainer width="100%" height="100%">
+                                                <PieChart margin={{ top: 20, bottom: 20 }}>
+                                                    <Pie data={activeStats.byType || []} innerRadius={45} outerRadius={65} paddingAngle={4} dataKey="value" stroke="none" label={({name, value}) => `${name}: ${value}€`}>
+                                                        {activeStats.byType.map((e,i) => <Cell key={i} fill={currentColors[i % currentColors.length]} strokeWidth={2} stroke={isDarkMode ? '#0f172a' : '#fff'} />)}
+                                                    </Pie>
+                                                    <Tooltip contentStyle={{backgroundColor: isDarkMode ? '#1e293b' : '#fff', border: 'none', borderRadius: '10px', fontSize: '10px'}}/>
+                                                </PieChart>
+                                            </ResponsiveContainer>
+                                        </div>
+                                    </div>
+                                    <div className={`p-4 rounded-xl border ${isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-100'}`}>
+                                        <h3 className="text-[10px] font-black uppercase mb-4 text-slate-400 tracking-widest italic">CA vs Dépenses ({selectedYear})</h3>
+                                        <div className="h-[220px]">
+                                            <ResponsiveContainer width="100%" height="100%">
+                                                <BarChart data={stats.evolution || []} margin={{top: 30, right: 10, left: -20, bottom: 0}}>
+                                                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={isDarkMode ? '#334155' : '#f1f5f9'} />
+                                                    <XAxis dataKey="name" fontSize={8} tick={{fill: chartTextColor}} axisLine={false} tickLine={false} />
+                                                    <Bar dataKey="ca" name="CA" fill="#0d9488" radius={[4,4,0,0]} barSize={10}>
+                                                        <LabelList dataKey="ca" position="top" offset={10} style={{fill: labelColor, fontSize: 8, fontWeight: 900}} formatter={v => v > 0 ? `${v}€` : ''} />
+                                                    </Bar>
+                                                    <Bar dataKey="dep" name="Dépenses" fill="#f43f5e" radius={[4,4,0,0]} barSize={10} />
+                                                    <Tooltip cursor={{fill: isDarkMode ? '#ffffff05' : '#00000005'}} contentStyle={{backgroundColor: isDarkMode ? '#1e293b' : '#fff', border: 'none', borderRadius: '10px', fontSize: '10px'}}/>
+                                                </BarChart>
+                                            </ResponsiveContainer>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+
+                        {view === 'list' && (
+                            <div className={`rounded-xl border overflow-hidden animate-in fade-in duration-500 ${isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-100 shadow-sm'}`}>
+                                <div className="overflow-x-auto">
+                                    <table className="w-full text-left text-[11px]">
+                                        <thead className={isDarkMode ? 'bg-slate-800' : 'bg-slate-50'}>
+                                            <tr className="uppercase tracking-widest text-slate-500 font-bold">
+                                                <th className="p-4">Client</th>
+                                                <th className="p-4 text-center">Statut</th>
+                                                <th className="p-4 text-right">CA / Frais</th>
+                                                <th className="p-4 text-right">Actions</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody className={`divide-y ${isDarkMode ? 'divide-slate-800' : 'divide-slate-100'}`}>
+                                            {(sessions || []).map(s => (
+                                                <tr key={s.id} onClick={() => setViewingSession(s)} className={`${s.isCancelled ? 'opacity-40' : (isDarkMode ? 'hover:bg-white/5' : 'hover:bg-slate-50')} transition-colors cursor-pointer group`}>
+                                                    <td className="p-4"><p className="font-bold text-xs">{s.client}</p><p className="text-[9px] font-normal text-slate-500">{s.date} • {s.type}</p></td>
+                                                    <td className="p-4 text-center">
+                                                        <button onClick={(e) => togglePaid(e, s.id, s.isPaid)} className={`px-3 py-1 rounded-full text-[9px] font-black uppercase shadow-sm ${s.isPaid ? 'bg-teal-500 text-white' : 'bg-rose-500 text-white'}`}>{s.isPaid ? 'Payé' : 'À payer'}</button>
+                                                    </td>
+                                                    <td className="p-4 text-right font-black text-xs"><span className="text-teal-600">{s.price}€</span><br/><span className="text-rose-500 font-normal text-[9px]">{s.expenses ? `-${s.expenses}€` : '-'}</span></td>
+                                                    <td className="p-4">
+                                                        <div className="flex gap-2 justify-end">
+                                                            <button onClick={(e) => { e.stopPropagation(); setViewingSession(s); }} className="p-1.5 text-slate-400 hover:text-teal-500"><Icon name="eye" size={14}/></button>
+                                                            <button onClick={(e) => startEdit(e, s)} className="p-1.5 text-slate-400 hover:text-amber-500"><Icon name="edit-3" size={14}/></button>
+                                                            <button onClick={(e) => { e.stopPropagation(); setDeleteConfirmId(s.id); }} className="p-1.5 text-slate-400 hover:text-rose-500"><Icon name="trash-2" size={14}/></button>
+                                                        </div>
+                                                    </td>
+                                                </tr>
+                                            ))}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        )}
+
+                        {view === 'add' && (
+                            <div className={`max-w-xl mx-auto p-6 rounded-2xl border animate-in zoom-in-95 duration-300 ${isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-100 shadow-xl'}`}>
+                                <form onSubmit={handleFormSubmit} className="space-y-4 text-left">
+                                    <div className="space-y-1"><label className="text-[9px] font-black uppercase text-slate-500 ml-1">Client</label><input type="text" placeholder="Nom..." required className={`w-full p-3 rounded-lg border-none outline-none font-bold text-sm ${isDarkMode ? 'bg-slate-800 text-white' : 'bg-slate-100 text-slate-900'}`} value={formData.client} onChange={e => setFormData({...formData, client: e.target.value})} /></div>
+                                    <div className="grid grid-cols-2 gap-4">
+                                        <div className="space-y-1"><label className="text-[9px] font-black uppercase text-slate-500 ml-1">Date</label><input type="date" className={`w-full p-3 rounded-lg border-none outline-none text-sm ${isDarkMode ? 'bg-slate-800 text-white' : 'bg-slate-100 text-slate-900'}`} value={formData.date} onChange={e => setFormData({...formData, date: e.target.value})} /></div>
+                                        <div className="space-y-1"><label className="text-[9px] font-black uppercase text-slate-500 ml-1">CA (€)</label><input type="number" required className={`w-full p-3 rounded-lg border-none outline-none font-black text-teal-600 text-sm ${isDarkMode ? 'bg-slate-800' : 'bg-slate-100'}`} value={formData.price} onChange={e => setFormData({...formData, price: e.target.value})} /></div>
+                                    </div>
+                                    <div className="grid grid-cols-2 gap-4 border-t border-slate-500/10 pt-4">
+                                        <div className="space-y-1"><label className="text-[9px] font-black uppercase text-rose-500 ml-1 font-bold">Dépenses (€)</label><input type="number" placeholder="0" className={`w-full p-3 rounded-lg border-none outline-none font-bold text-rose-500 text-sm ${isDarkMode ? 'bg-slate-800' : 'bg-slate-100'}`} value={formData.expenses} onChange={e => setFormData({...formData, expenses: e.target.value})} /></div>
+                                        <div className="space-y-1"><label className="text-[9px] font-black uppercase text-teal-500 ml-1 font-bold">Temps total (h)</label><input type="number" placeholder="0" step="0.5" className={`w-full p-3 rounded-lg border-none outline-none font-bold text-teal-600 text-sm ${isDarkMode ? 'bg-slate-800' : 'bg-slate-100'}`} value={formData.hours} onChange={e => setFormData({...formData, hours: e.target.value})} /></div>
+                                    </div>
+                                    <div className="grid grid-cols-2 gap-4">
+                                        <div className="space-y-1">
+                                            <label className="text-[9px] font-black uppercase text-slate-500 ml-1">Prestation</label>
+                                            <select className={`w-full p-3 rounded-lg border-none outline-none text-sm font-bold ${isDarkMode ? 'bg-slate-800 text-white' : 'bg-slate-100 text-slate-900'}`} value={formData.type} onChange={e => setFormData({...formData, type: e.target.value})}>{(shootingTypes || []).map(t => <option key={t} value={t}>{t}</option>)}</select>
+                                        </div>
+                                        <div className="space-y-1">
+                                            <label className="text-[9px] font-black uppercase text-slate-500 ml-1">Lieu</label>
+                                            <select className={`w-full p-3 rounded-lg border-none outline-none text-sm font-bold ${isDarkMode ? 'bg-slate-800 text-white' : 'bg-slate-100 text-slate-900'}`} value={formData.location} onChange={e => setFormData({...formData, location: e.target.value})}>{(locations || []).map(l => <option key={l} value={l}>{l}</option>)}</select>
+                                        </div>
+                                    </div>
+                                    <div className="space-y-1">
+                                        <label className="text-[9px] font-black uppercase text-slate-500 ml-1">Règlement</label>
+                                        <select className={`w-full p-3 rounded-lg border-none outline-none text-sm font-bold ${isDarkMode ? 'bg-slate-800 text-white' : 'bg-slate-100 text-slate-900'}`} value={formData.paymentMethod} onChange={e => setFormData({...formData, paymentMethod: e.target.value})}>{(paymentMethods || []).map(m => <option key={m} value={m}>{m}</option>)}</select>
+                                    </div>
+                                    <div className="space-y-1">
+                                        <label className="text-[9px] font-black uppercase text-slate-500 ml-1 italic">Notes</label>
+                                        <textarea placeholder="Observations..." className={`w-full p-3 rounded-lg border-none outline-none text-sm h-24 resize-none ${isDarkMode ? 'bg-slate-800 text-white' : 'bg-slate-100 text-slate-900'}`} value={formData.notes} onChange={e => setFormData({...formData, notes: e.target.value})}></textarea>
+                                    </div>
+                                    <div className="flex gap-4 p-3 bg-slate-500/5 rounded-lg border border-slate-500/10">
+                                        <label className="flex items-center gap-2 cursor-pointer text-[10px] font-black uppercase text-teal-500"><input type="checkbox" className="accent-teal-600" checked={formData.isPaid} onChange={e => setFormData({...formData, isPaid: e.target.checked})}/> Payé</label>
+                                        <label className="flex items-center gap-2 cursor-pointer text-[10px] font-black uppercase text-rose-500"><input type="checkbox" className="accent-rose-600" checked={formData.isCancelled} onChange={e => setFormData({...formData, isCancelled: e.target.checked})}/> Annulé</label>
+                                    </div>
+                                    <button type="submit" className="w-full bg-teal-600 text-white p-4 rounded-xl font-black uppercase text-xs shadow-lg shadow-teal-600/30">{editingId ? "Mettre à jour" : "Confirmer l'encodage"}</button>
+                                </form>
+                            </div>
+                        )}
+
+                        {view === 'settings' && (
+                            <div className="max-w-xl mx-auto space-y-6 text-left animate-in fade-in duration-500">
+                                <div className={`p-6 rounded-2xl border ${isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-100 shadow-sm'}`}>
+                                    <h3 className="text-xs font-black uppercase mb-4 text-teal-500 tracking-widest italic underline decoration-teal-500/30 underline-offset-4">Options Interface</h3>
+                                    <div className="flex justify-between items-center mb-6 p-3 bg-slate-500/5 rounded-xl">
+                                        <div className="flex items-center gap-3"><Icon name={isDarkMode ? 'moon' : 'sun'} className="text-teal-600" size={16} /> <span className="text-[10px] font-black uppercase">Mode Sombre</span></div>
+                                        <button onClick={() => {setIsDarkMode(!isDarkMode); savePreferences({isDarkMode: !isDarkMode});}} className={`w-10 h-5 rounded-full relative transition-all ${isDarkMode ? 'bg-teal-600' : 'bg-slate-300'}`}><div className={`absolute top-1 w-3 h-3 bg-white rounded-full transition-all ${isDarkMode ? 'left-6' : 'left-1'}`}></div></button>
+                                    </div>
+                                    <div className="space-y-2 px-1">
+                                        <div className="flex justify-between text-[10px] font-black uppercase text-slate-500"><span>Zoom application</span><span>{zoom}%</span></div>
+                                        <input type="range" min="80" max="150" value={zoom} onChange={e => {setZoom(e.target.value); savePreferences({zoom: e.target.value});}} className="w-full h-1.5 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-teal-600" />
+                                    </div>
+                                </div>
+                                {[
+                                    { title: 'Lieux', data: locations, set: setLocations, field: 'locations', icon: 'map-pin' },
+                                    { title: 'Prestations', data: shootingTypes, set: setShootingTypes, field: 'shootingTypes', icon: 'camera' },
+                                    { title: 'Règlements', data: paymentMethods, set: setPaymentMethods, field: 'paymentMethods', icon: 'wallet-2' }
+                                ].map((section, idx) => (
+                                    <div key={idx} className={`p-6 rounded-2xl border ${isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-100 shadow-sm'}`}>
+                                        <h3 className="text-xs font-black uppercase mb-4 flex items-center gap-2"><Icon name={section.icon} className="text-teal-500" size={14}/> {section.title}</h3>
+                                        <div className="space-y-2">
+                                            {(section.data || []).map((item, i) => (
+                                                <div key={i} className="flex items-center gap-2 group">
+                                                    <input type="text" className={`flex-1 p-2 rounded-lg border-none outline-none font-bold text-[11px] ${isDarkMode ? 'bg-slate-800' : 'bg-slate-50'}`} value={item} 
+                                                        onChange={(e) => { const next = [...section.data]; next[i] = e.target.value; section.set(next); savePreferences({[section.field]: next}); }} />
+                                                    <button onClick={() => { const next = section.data.filter((_, j) => j !== i); section.set(next); savePreferences({[section.field]: next}); }} className="p-1.5 text-slate-300 hover:text-rose-500 transition-all opacity-0 group-hover:opacity-100"><Icon name="x" size={14}/></button>
+                                                </div>
+                                            ))}
+                                            <div className="pt-2">
+                                                <input id={`new-${section.field}`} placeholder="Ajouter..." className={`w-full p-2 rounded-lg border border-dashed border-slate-300 outline-none font-bold text-[11px] ${isDarkMode ? 'bg-slate-800 border-slate-700' : 'bg-white'}`} onKeyDown={(e) => {
+                                                    if(e.key === 'Enter' && e.target.value) { const next = [...(section.data || []), e.target.value]; section.set(next); savePreferences({[section.field]: next}); e.target.value = ''; }
+                                                }} />
+                                            </div>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                    </main>
+
+                    {/* MODALE DÉTAILS */}
+                    {viewingSession && (
+                        <div className="fixed inset-0 z-[300] flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-md animate-in fade-in duration-300">
+                            <div className={`relative max-w-lg w-full rounded-3xl p-6 shadow-2xl overflow-hidden border ${isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-200'}`}>
+                                <button onClick={() => setViewingSession(null)} className="absolute top-4 right-4 p-2 rounded-full bg-slate-500/10 hover:bg-rose-500/20 hover:text-rose-500 transition-all"><Icon name="x" size={18}/></button>
+                                <div className="flex items-center gap-4 mb-6">
+                                    <div className="p-3 bg-teal-600 rounded-2xl shadow-lg text-white"><Icon name="user" size={24}/></div>
+                                    <div className="text-left">
+                                        <h3 className="text-xl font-black italic leading-none">{viewingSession.client}</h3>
+                                        <p className="text-[10px] font-bold text-teal-600 uppercase mt-1">{viewingSession.type} • {viewingSession.date}</p>
+                                    </div>
+                                </div>
+                                <div className="grid grid-cols-2 gap-3 mb-6">
+                                    <div className={`p-4 rounded-2xl border ${isDarkMode ? 'bg-slate-800/50' : 'bg-slate-50'}`}><p className="text-[8px] font-black text-slate-400 uppercase mb-1">Honoraires</p><p className="text-xl font-black text-teal-600">{viewingSession.price}€</p></div>
+                                    <div className={`p-4 rounded-2xl border ${isDarkMode ? 'bg-slate-800/50' : 'bg-slate-50'}`}><p className="text-[8px] font-black text-slate-400 uppercase mb-1">Frais</p><p className="text-xl font-black text-rose-500">{viewingSession.expenses || 0}€</p></div>
+                                </div>
+                                <div className="space-y-4 text-left">
+                                    <p className="text-[9px] font-black uppercase text-slate-400 tracking-widest">Notes de la séance</p>
+                                    <div className={`p-4 rounded-2xl min-h-[100px] max-h-[200px] overflow-y-auto text-sm leading-relaxed ${isDarkMode ? 'bg-slate-800 text-slate-300' : 'bg-slate-50 text-slate-600'}`}>
+                                        {viewingSession.notes ? viewingSession.notes : <span className="italic opacity-50">Aucune note.</span>}
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {view !== 'add' && (
+                        <div className="fixed bottom-[4.5rem] md:bottom-6 right-6 z-[100] group flex items-center">
+                            <span className={`bg-slate-900 text-white text-[7px] font-black uppercase tracking-widest px-2 py-1 rounded-md mr-2 opacity-0 group-hover:opacity-100 transition-all translate-x-2 group-hover:translate-x-0 ${isDarkMode ? 'bg-slate-800' : ''}`}>Encoder</span>
+                            <button onClick={() => {setView('add'); resetForm();}} className="w-12 h-12 bg-teal-600 text-white rounded-full shadow-xl flex items-center justify-center hover:scale-110 transition-all"><Icon name="plus" size={24} /></button>
+                        </div>
+                    )}
+
+                    {deleteConfirmId && (
+                        <div className="fixed inset-0 z-[400] flex items-center justify-center p-4 bg-slate-950/90 backdrop-blur-sm animate-in fade-in duration-200 text-left">
+                            <div className={`p-6 rounded-3xl max-w-[280px] w-full shadow-2xl ${isDarkMode ? 'bg-slate-900 border border-slate-800' : 'bg-white'}`}>
+                                <h3 className="font-black text-xs uppercase mb-4 flex items-center gap-2"><Icon name="alert-triangle" className="text-rose-500"/> Supprimer ?</h3>
+                                <div className="flex gap-2">
+                                    <button onClick={() => setDeleteConfirmId(null)} className="flex-1 py-2 rounded-lg font-bold text-[10px] bg-slate-100">Annuler</button>
+                                    <button onClick={() => deleteSession(deleteConfirmId)} className="flex-1 py-2 rounded-lg bg-rose-600 text-white font-bold text-[10px]">Confirmer</button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+                </div>
+            );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
