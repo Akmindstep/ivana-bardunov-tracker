@@ -41,11 +41,11 @@
             -webkit-backdrop-filter: blur(12px);
         }
 
-        /* Fix inputs mobile */
         input, select, textarea {
-            font-size: 16px !important; /* Évite le zoom automatique iOS */
+            font-size: 16px !important;
             appearance: none;
             -webkit-appearance: none;
+            border-radius: 1rem;
         }
 
         ::-webkit-scrollbar { width: 4px; }
@@ -72,7 +72,6 @@
             width: 100%;
         }
 
-        /* Harmonisation inputs */
         .standard-input {
             height: 3.5rem;
             border-radius: 1rem;
@@ -94,7 +93,7 @@
 
     <script type="text/babel">
         const { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, PieChart, Pie, Cell, LabelList } = window.Recharts;
-        const { useState, useMemo, useEffect, useCallback } = React;
+        const { useState, useMemo, useEffect } = React;
 
         // --- FIREBASE CONFIG ---
         const firebaseConfig = {
@@ -139,10 +138,12 @@
             const [sessions, setSessions] = useState([]);
             const [entryType, setEntryType] = useState('shooting');
 
+            // Réglages synchronisés
             const [shootingTypes, setShootingTypes] = useState(["Portrait", "Mariage", "Grossesse", "Bébé", "Évènement", "Corporate"]);
             const [locations, setLocations] = useState(["Studio", "Extérieur", "Domicile"]);
             const [paymentMethods, setPaymentMethods] = useState(["Virement", "Espèces", "Lydia/Paylib", "Chèque"]);
             const [expenseCategories, setExpenseCategories] = useState(["Cotisations URSSAF", "Assurance", "Loyer/Studio", "Matériel", "Logiciels", "Marketing", "Frais bancaires", "Autre"]);
+            const [communicationMethods, setCommunicationMethods] = useState(["Instagram", "WhatsApp", "Email", "Téléphone", "Facebook"]);
             
             const [editingId, setEditingId] = useState(null);
             const [deleteConfirmId, setDeleteConfirmId] = useState(null);
@@ -152,15 +153,11 @@
                 date: new Date().toISOString().split('T')[0],
                 client: '', type: "Portrait", location: "Studio", modality: "Présentiel",
                 price: '', expenses: '', hours: '', isPaid: false, isCancelled: false, paymentMethod: "Virement", notes: '',
-                expenseCategory: 'Cotisations URSSAF', label: ''
+                expenseCategory: 'Cotisations URSSAF', label: '', communicationMethod: 'Instagram'
             });
 
-            // Remonter en haut de page lors de chaque changement d'onglet
-            useEffect(() => {
-                window.scrollTo(0, 0);
-            }, [view]);
+            useEffect(() => { window.scrollTo(0, 0); }, [view]);
 
-            // Authentification
             useEffect(() => {
                 const unsubAuth = auth.onAuthStateChanged(async (user) => {
                     if (user) { setUser(user); } else {
@@ -170,7 +167,6 @@
                 return () => unsubAuth();
             }, []);
 
-            // Synchronisation Temps Réel
             useEffect(() => {
                 if (!user) return;
                 const shootingsPath = `artifacts/${currentAppId}/public/data/shootings`;
@@ -188,6 +184,7 @@
                         if (Array.isArray(prefs.locations)) setLocations(prefs.locations);
                         if (Array.isArray(prefs.paymentMethods)) setPaymentMethods(prefs.paymentMethods);
                         if (Array.isArray(prefs.expenseCategories)) setExpenseCategories(prefs.expenseCategories);
+                        if (Array.isArray(prefs.communicationMethods)) setCommunicationMethods(prefs.communicationMethods);
                         if (prefs.isDarkMode !== undefined) setIsDarkMode(prefs.isDarkMode);
                         if (prefs.zoom) setZoom(prefs.zoom);
                     }
@@ -242,7 +239,7 @@
                     date: new Date().toISOString().split('T')[0],
                     client: '', type: shootingTypes[0] || "Portrait", location: locations[0] || "Studio", modality: "Présentiel",
                     price: '', expenses: '', hours: '', isPaid: false, isCancelled: false, paymentMethod: paymentMethods[0] || "Virement", notes: '',
-                    expenseCategory: expenseCategories[0] || "Cotisations URSSAF", label: ''
+                    expenseCategory: expenseCategories[0] || "Cotisations URSSAF", label: '', communicationMethod: communicationMethods[0] || "Instagram"
                 });
             };
 
@@ -251,12 +248,14 @@
                 setViewingSession(null); 
                 setEntryType(s.entryType || 'shooting');
                 setEditingId(s.id); 
-                setFormData(s); 
+                setFormData({
+                    ...s,
+                    communicationMethod: s.communicationMethod || communicationMethods[0]
+                }); 
                 setView('add'); 
                 window.scrollTo(0, 0);
             };
 
-            // Navigation sécurisée
             const navigateDate = (dir, unit) => {
                 const newDate = new Date(currentDate);
                 if (unit === 'month') newDate.setMonth(newDate.getMonth() + dir);
@@ -264,7 +263,6 @@
                 setCurrentDate(newDate);
             };
 
-            // --- CALCULS ---
             const selectedMonthIdx = currentDate.getMonth();
             const selectedYear = currentDate.getFullYear();
             const selectedMonthLabel = currentDate.toLocaleString('fr-FR', { month: 'long', year: 'numeric' });
@@ -282,27 +280,15 @@
                     const totalHours = data.filter(s => s.entryType !== 'expense' && !s.isCancelled).reduce((acc, s) => acc + Number(s.hours || 0), 0);
                     const profitNet = caEncaisse - totalExpenses;
                     const hourlyRate = totalHours > 0 ? caEncaisse / totalHours : 0;
-                    
-                    const byType = (shootingTypes || []).map(t => ({ 
-                        name: t, value: data.filter(s => s.entryType !== 'expense' && s.type === t && !s.isCancelled).reduce((acc, s) => acc + Number(s.price || 0), 0) 
-                    })).filter(v => v.value > 0);
-
-                    const logisticData = [
-                        { name: 'Studio', value: data.filter(s => s.entryType !== 'expense' && s.location === "Studio" && !s.isCancelled).length }, 
-                        { name: 'Ext/Dom', value: data.filter(s => s.entryType !== 'expense' && s.location !== "Studio" && !s.isCancelled).length }
-                    ].filter(v => v.value > 0);
-
+                    const byType = (shootingTypes || []).map(t => ({ name: t, value: data.filter(s => s.entryType !== 'expense' && s.type === t && !s.isCancelled).reduce((acc, s) => acc + Number(s.price || 0), 0) })).filter(v => v.value > 0);
+                    const logisticData = [{ name: 'Studio', value: data.filter(s => s.entryType !== 'expense' && s.location === "Studio" && !s.isCancelled).length }, { name: 'Ext/Dom', value: data.filter(s => s.entryType !== 'expense' && s.location !== "Studio" && !s.isCancelled).length }].filter(v => v.value > 0);
                     return { caEncaisse, impayes, totalExpenses, profitNet, totalHours, hourlyRate, byType, logisticData };
                 };
 
                 const monthsLabels = ["Jan", "Fév", "Mar", "Avr", "Mai", "Jun", "Jul", "Aoû", "Sep", "Oct", "Nov", "Déc"];
                 const monthlyEvolution = monthsLabels.map((m, i) => {
                     const mData = annualData.filter(s => new Date(s.date).getMonth() === i);
-                    return { 
-                        name: m, 
-                        ca: mData.filter(s => s.entryType !== 'expense' && !s.isCancelled).reduce((acc, s) => acc + Number(s.price || 0), 0), 
-                        dep: mData.filter(s => s.entryType === 'expense').reduce((acc, s) => acc + Number(s.price || 0), 0) + mData.filter(s => s.entryType !== 'expense').reduce((acc, s) => acc + Number(s.expenses || 0), 0) 
-                    };
+                    return { name: m, ca: mData.filter(s => s.entryType !== 'expense' && !s.isCancelled).reduce((acc, s) => acc + Number(s.price || 0), 0), dep: mData.filter(s => s.entryType === 'expense').reduce((acc, s) => acc + Number(s.price || 0), 0) + mData.filter(s => s.entryType !== 'expense').reduce((acc, s) => acc + Number(s.expenses || 0), 0) };
                 });
 
                 return { monthly: compute(monthlyData), annual: compute(annualData), evolution: monthlyEvolution };
@@ -310,13 +296,14 @@
 
             const activeStats = view === 'monthly' ? stats.monthly : stats.annual;
             const currentColors = isDarkMode ? DARK_COLORS : LIGHT_COLORS;
+            const chartTextColor = isDarkMode ? '#94a3b8' : '#64748b';
 
             if (!user) return <div className="loading-screen"><div style={{ border: "3px solid #f3f3f3", borderTop: "3px solid var(--brand-teal)", borderRadius: "50%", width: "45px", height: "45px", animation: "spin 0.8s linear infinite" }}></div></div>;
 
             return (
                 <div className={`min-h-screen transition-colors duration-500 ${isDarkMode ? 'bg-[#0f172a] text-slate-100' : 'bg-slate-50 text-slate-900'}`}>
                     
-                    {/* Desktop Header */}
+                    {/* Header Desktop */}
                     <nav className={`hidden md:flex sticky top-0 z-50 h-16 items-center justify-between px-8 border-b glass-card ${isDarkMode ? 'bg-[#1e293b]/80 border-slate-800' : 'bg-white/80 border-slate-200'} shadow-sm`}>
                         <div className="flex items-center gap-3">
                             <div className="bg-teal-600 p-2 rounded-xl shadow-lg"><Icon name="camera" className="text-white" size={18}/></div>
@@ -338,7 +325,7 @@
                     </nav>
 
                     <main className="p-4 md:p-8 max-w-[1400px] mx-auto pb-24 md:pb-12 text-left">
-                        <header className="mb-6 flex flex-col md:flex-row md:items-center justify-between gap-4">
+                        <header className="mb-6 flex flex-col md:flex-row md:items-center justify-between gap-4 text-left">
                             <div className="flex items-center gap-4">
                                 {(view === 'monthly' || view === 'annual') && <button onClick={() => navigateDate(-1, view === 'monthly' ? 'month' : 'year')} className="p-2 bg-slate-500/5 rounded-full"><Icon name="chevron-left" className="text-teal-600" size={24}/></button>}
                                 <h2 className="text-2xl md:text-3xl font-black italic tracking-tighter capitalize">{view === 'monthly' ? selectedMonthLabel : view === 'annual' ? `Bilan ${selectedYear}` : view === 'list' ? "Journal d'activité" : "Réglages"}</h2>
@@ -349,7 +336,6 @@
 
                         {(view === 'monthly' || view === 'annual') && (
                             <div className="space-y-6">
-                                {/* KPI Cards - Compact & Elegant */}
                                 <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
                                     <div className={`p-4 rounded-2xl border ${isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-100'} shadow-sm`}>
                                         <p className="text-[8px] font-black text-slate-400 uppercase tracking-widest mb-1">CA Encaissé</p>
@@ -373,17 +359,16 @@
                                     </div>
                                 </div>
 
-                                {/* Graphiques révisés avec Labels centraux */}
                                 <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                                     <div className={`p-6 rounded-3xl border ${isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-100'} shadow-sm`}>
-                                        <h3 className="text-[10px] font-black uppercase mb-4 text-slate-400 tracking-widest italic">Lieux (Séances)</h3>
+                                        <h3 className="text-[10px] font-black uppercase mb-4 text-slate-400 tracking-widest italic text-left">Lieux</h3>
                                         <div className="h-[200px] chart-container">
                                             <ResponsiveContainer width="100%" height="100%">
                                                 <PieChart>
                                                     <Pie data={activeStats.logisticData || []} innerRadius="75%" outerRadius="95%" paddingAngle={8} dataKey="value" stroke="none">
                                                         <Cell fill="#0d9488" cornerRadius={10} /><Cell fill={isDarkMode ? '#334155' : '#e2e8f0'} cornerRadius={10} />
                                                     </Pie>
-                                                    <Tooltip contentStyle={{borderRadius: '15px', border: 'none', boxShadow: '0 10px 20px rgba(0,0,0,0.1)'}}/>
+                                                    <Tooltip contentStyle={{borderRadius: '15px', border: 'none'}}/>
                                                 </PieChart>
                                             </ResponsiveContainer>
                                             <div className="chart-center-label">
@@ -392,9 +377,8 @@
                                             </div>
                                         </div>
                                     </div>
-
                                     <div className={`p-6 rounded-3xl border ${isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-100'} shadow-sm`}>
-                                        <h3 className="text-[10px] font-black uppercase mb-4 text-slate-400 tracking-widest italic">Services (CA)</h3>
+                                        <h3 className="text-[10px] font-black uppercase mb-4 text-slate-400 tracking-widest italic text-left">Services</h3>
                                         <div className="h-[200px] chart-container">
                                             <ResponsiveContainer width="100%" height="100%">
                                                 <PieChart>
@@ -410,14 +394,13 @@
                                             </div>
                                         </div>
                                     </div>
-
                                     <div className={`p-6 rounded-3xl border ${isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-100'} shadow-sm`}>
-                                        <h3 className="text-[10px] font-black uppercase mb-4 text-slate-400 tracking-widest italic">CA vs Frais Mensuels</h3>
+                                        <h3 className="text-[10px] font-black uppercase mb-4 text-slate-400 tracking-widest italic text-left">CA vs Frais</h3>
                                         <div className="h-[200px]">
                                             <ResponsiveContainer width="100%" height="100%">
                                                 <BarChart data={stats.evolution || []} margin={{top: 25, right: 10, left: 15, bottom: 5}}>
                                                     <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={isDarkMode ? '#ffffff05' : '#00000008'} />
-                                                    <XAxis dataKey="name" fontSize={9} tick={{fill: '#94a3b8', fontWeight: 600}} axisLine={false} tickLine={false} padding={{ left: 10, right: 10 }} />
+                                                    <XAxis dataKey="name" fontSize={9} tick={{fill: '#94a3b8', fontWeight: 600}} axisLine={false} tickLine={false} padding={{ left: 15, right: 15 }} />
                                                     <Bar dataKey="ca" fill="#0d9488" radius={[3,3,3,3]} barSize={8} />
                                                     <Bar dataKey="dep" fill="#f43f5e" radius={[3,3,3,3]} barSize={8} />
                                                     <Tooltip cursor={{fill: 'transparent'}} contentStyle={{borderRadius: '12px', border: 'none'}}/>
@@ -456,9 +439,7 @@
                                                 <div className="truncate"><p className="font-bold text-sm tracking-tight">{s.entryType === 'expense' ? s.label : s.client}</p><p className="text-[10px] text-slate-400 uppercase font-bold tracking-tighter truncate">{s.date} • {s.entryType === 'expense' ? 'Charge' : s.type}</p></div>
                                             </div>
                                             <div className="flex flex-col items-end gap-2 shrink-0 ml-4">
-                                                <div className="text-right" onClick={() => setViewingSession(s)}>
-                                                    <p className={`font-black text-sm ${s.entryType === 'expense' ? 'text-rose-500' : (s.isPaid ? 'text-teal-600' : 'text-rose-500')}`}>{s.entryType === 'expense' ? '-' : ''}{s.price}€</p>
-                                                </div>
+                                                <div className="text-right" onClick={() => setViewingSession(s)}><p className={`font-black text-sm ${s.entryType === 'expense' ? 'text-rose-500' : (s.isPaid ? 'text-teal-600' : 'text-rose-500')}`}>{s.entryType === 'expense' ? '-' : ''}{s.price}€</p></div>
                                                 <div className="flex gap-2">
                                                     <button onClick={(e) => startEdit(e, s)} className="p-2 bg-slate-100 dark:bg-slate-800 rounded-lg text-slate-500"><Icon name="edit-3" size={14}/></button>
                                                     <button onClick={(e) => {e.stopPropagation(); setDeleteConfirmId(s.id);}} className="p-2 bg-rose-50 dark:bg-rose-900/20 rounded-lg text-rose-500"><Icon name="trash-2" size={14}/></button>
@@ -482,24 +463,28 @@
                                         <>
                                             <div className="space-y-1"><label className="text-[9px] font-black uppercase text-slate-500 ml-1">Client</label><input type="text" placeholder="Marie Martin..." required className="standard-input bg-slate-500/5 dark:bg-slate-800 text-sm" value={formData.client} onChange={e => setFormData({...formData, client: e.target.value})} /></div>
                                             <div className="flex flex-col gap-4">
-                                                <div className="space-y-1 flex-1 text-left"><label className="text-[9px] font-black uppercase text-slate-500 ml-1">Date</label><input type="date" required className="standard-input bg-slate-500/5 dark:bg-slate-800 text-sm" value={formData.date} onChange={e => setFormData({...formData, date: e.target.value})} /></div>
-                                                <div className="space-y-1 flex-1 text-left"><label className="text-[9px] font-black uppercase text-slate-500 ml-1">Honoraires (€)</label><input type="number" required placeholder="0" className="standard-input bg-slate-500/5 dark:bg-slate-800 text-teal-600 text-lg" value={formData.price} onChange={e => setFormData({...formData, price: e.target.value})} /></div>
-                                            </div>
-                                            <div className="flex flex-col md:flex-row gap-4">
-                                                <div className="space-y-1 flex-1 text-left"><label className="text-[9px] font-black uppercase text-rose-500 ml-1 font-bold">Frais (€)</label><input type="number" placeholder="0" className="standard-input bg-slate-500/5 dark:bg-slate-800 text-rose-500" value={formData.expenses} onChange={e => setFormData({...formData, expenses: e.target.value})} /></div>
-                                                <div className="space-y-1 flex-1 text-left"><label className="text-[9px] font-black uppercase text-teal-500 ml-1 font-bold">Temps (h)</label><input type="number" step="0.5" className="standard-input bg-slate-500/5 dark:bg-slate-800 text-teal-600" value={formData.hours} onChange={e => setFormData({...formData, hours: e.target.value})} /></div>
+                                                <div className="space-y-1 text-left flex-1"><label className="text-[9px] font-black uppercase text-slate-500 ml-1">Date</label><input type="date" required className="standard-input bg-slate-500/5 dark:bg-slate-800 text-sm" value={formData.date} onChange={e => setFormData({...formData, date: e.target.value})} /></div>
+                                                <div className="space-y-1 text-left flex-1"><label className="text-[9px] font-black uppercase text-slate-500 ml-1">Honoraires (€)</label><input type="number" required placeholder="0" className="standard-input bg-slate-500/5 dark:bg-slate-800 text-teal-600 text-lg" value={formData.price} onChange={e => setFormData({...formData, price: e.target.value})} /></div>
                                             </div>
                                             <div className="grid grid-cols-2 gap-4">
-                                                <div className="space-y-1 flex-1 text-left"><label className="text-[9px] font-black uppercase text-slate-500 ml-1">Type</label><select className="standard-input bg-slate-500/5 dark:bg-slate-800 text-sm" value={formData.type} onChange={e => setFormData({...formData, type: e.target.value})}>{(shootingTypes || []).map(t => <option key={t} value={t}>{t}</option>)}</select></div>
-                                                <div className="space-y-1 flex-1 text-left"><label className="text-[9px] font-black uppercase text-slate-500 ml-1">Lieu</label><select className="standard-input bg-slate-500/5 dark:bg-slate-800 text-sm" value={formData.location} onChange={e => setFormData({...formData, location: e.target.value})}>{(locations || []).map(l => <option key={l} value={l}>{l}</option>)}</select></div>
+                                                <div className="space-y-1 text-left flex-1"><label className="text-[9px] font-black uppercase text-slate-500 ml-1">Communication</label><select className="standard-input bg-slate-500/5 dark:bg-slate-800 text-sm" value={formData.communicationMethod} onChange={e => setFormData({...formData, communicationMethod: e.target.value})}>{(communicationMethods || []).map(m => <option key={m} value={m}>{m}</option>)}</select></div>
+                                                <div className="space-y-1 text-left flex-1"><label className="text-[9px] font-black uppercase text-slate-500 ml-1">Règlement</label><select className="standard-input bg-slate-500/5 dark:bg-slate-800 text-sm" value={formData.paymentMethod} onChange={e => setFormData({...formData, paymentMethod: e.target.value})}>{(paymentMethods || []).map(m => <option key={m} value={m}>{m}</option>)}</select></div>
+                                            </div>
+                                            <div className="flex flex-col md:flex-row gap-4">
+                                                <div className="space-y-1 text-left flex-1"><label className="text-[9px] font-black uppercase text-rose-500 ml-1 font-bold">Frais (€)</label><input type="number" placeholder="0" className="standard-input bg-slate-500/5 dark:bg-slate-800 text-rose-500" value={formData.expenses} onChange={e => setFormData({...formData, expenses: e.target.value})} /></div>
+                                                <div className="space-y-1 text-left flex-1"><label className="text-[9px] font-black uppercase text-teal-500 ml-1 font-bold">Temps (h)</label><input type="number" step="0.5" className="standard-input bg-slate-500/5 dark:bg-slate-800 text-teal-600" value={formData.hours} onChange={e => setFormData({...formData, hours: e.target.value})} /></div>
+                                            </div>
+                                            <div className="grid grid-cols-2 gap-4">
+                                                <div className="space-y-1 text-left flex-1"><label className="text-[9px] font-black uppercase text-slate-500 ml-1">Type</label><select className="standard-input bg-slate-500/5 dark:bg-slate-800 text-sm" value={formData.type} onChange={e => setFormData({...formData, type: e.target.value})}>{(shootingTypes || []).map(t => <option key={t} value={t}>{t}</option>)}</select></div>
+                                                <div className="space-y-1 text-left flex-1"><label className="text-[9px] font-black uppercase text-slate-500 ml-1">Lieu</label><select className="standard-input bg-slate-500/5 dark:bg-slate-800 text-sm" value={formData.location} onChange={e => setFormData({...formData, location: e.target.value})}>{(locations || []).map(l => <option key={l} value={l}>{l}</option>)}</select></div>
                                             </div>
                                         </>
                                     ) : (
                                         <>
                                             <div className="space-y-1"><label className="text-[9px] font-black uppercase text-rose-500 ml-1">Libellé</label><input type="text" placeholder="URSSAF, Adobe..." required className="standard-input bg-slate-500/5 dark:bg-slate-800 text-sm" value={formData.label} onChange={e => setFormData({...formData, label: e.target.value})} /></div>
                                             <div className="flex flex-col gap-4">
-                                                <div className="space-y-1 flex-1 text-left"><label className="text-[9px] font-black uppercase text-slate-500 ml-1">Date</label><input type="date" required className="standard-input bg-slate-500/5 dark:bg-slate-800 text-sm" value={formData.date} onChange={e => setFormData({...formData, date: e.target.value})} /></div>
-                                                <div className="space-y-1 flex-1 text-left"><label className="text-[9px] font-black uppercase text-rose-500 ml-1 font-bold">Montant (€)</label><input type="number" required placeholder="0" className="standard-input bg-slate-500/5 dark:bg-slate-800 text-rose-500 text-lg" value={formData.price} onChange={e => setFormData({...formData, price: e.target.value})} /></div>
+                                                <div className="space-y-1 text-left flex-1"><label className="text-[9px] font-black uppercase text-slate-500 ml-1">Date</label><input type="date" required className="standard-input bg-slate-500/5 dark:bg-slate-800 text-sm" value={formData.date} onChange={e => setFormData({...formData, date: e.target.value})} /></div>
+                                                <div className="space-y-1 text-left flex-1"><label className="text-[9px] font-black uppercase text-rose-500 ml-1 font-bold">Montant (€)</label><input type="number" required placeholder="0" className="standard-input bg-slate-500/5 dark:bg-slate-800 text-rose-500 text-lg" value={formData.price} onChange={e => setFormData({...formData, price: e.target.value})} /></div>
                                             </div>
                                             <div className="space-y-1 text-left"><label className="text-[9px] font-black uppercase text-slate-500 ml-1">Catégorie</label><select className="standard-input bg-slate-500/5 dark:bg-slate-800 text-sm" value={formData.expenseCategory} onChange={e => setFormData({...formData, expenseCategory: e.target.value})}>{(expenseCategories || []).map(cat => <option key={cat} value={cat}>{cat}</option>)}</select></div>
                                         </>
@@ -526,16 +511,17 @@
                                 {[
                                     { title: 'Lieux', data: locations, set: setLocations, field: 'locations', icon: 'map-pin' },
                                     { title: 'Prestations', data: shootingTypes, set: setShootingTypes, field: 'shootingTypes', icon: 'camera' },
+                                    { title: 'Communications', data: communicationMethods, set: setCommunicationMethods, field: 'communicationMethods', icon: 'message-circle' },
                                     { title: 'Charges Pro', data: expenseCategories, set: setExpenseCategories, field: 'expenseCategories', icon: 'receipt' }
                                 ].map((section, idx) => (
-                                    <div key={idx} className={`p-6 rounded-3xl border ${isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-100'} shadow-sm`}>
+                                    <div key={idx} className={`p-6 rounded-3xl border ${isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-100'} shadow-sm text-left`}>
                                         <h3 className="text-[10px] font-black uppercase mb-4 flex items-center gap-2 text-slate-400 tracking-widest"><Icon name={section.icon} className="text-teal-500" size={14}/> {section.title}</h3>
                                         <div className="space-y-2">
                                             {(section.data || []).map((item, i) => (
-                                                <div key={i} className="flex items-center gap-3 group text-left">
+                                                <div key={i} className="flex items-center gap-3 group">
                                                     <input type="text" className={`flex-1 p-2 rounded-xl border-none outline-none font-bold text-xs ${isDarkMode ? 'bg-slate-800' : 'bg-slate-50'}`} value={item} 
                                                         onChange={(e) => { const next = [...section.data]; next[i] = e.target.value; section.set(next); savePreferences({[section.field]: next}); }} />
-                                                    <button onClick={() => { const next = section.data.filter((_, j) => j !== i); section.set(next); savePreferences({[section.field]: next}); }} className="p-1.5 text-slate-300 hover:text-rose-500 opacity-0 group-hover:opacity-100"><Icon name="x" size={14}/></button>
+                                                    <button onClick={() => { const next = section.data.filter((_, j) => j !== i); section.set(next); savePreferences({[section.field]: next}); }} className="p-1.5 text-slate-300 hover:text-rose-500 transition-all opacity-0 group-hover:opacity-100"><Icon name="x" size={14}/></button>
                                                 </div>
                                             ))}
                                             <div className="pt-2"><input placeholder="Ajouter..." className={`w-full p-2 rounded-xl border border-dashed border-slate-300 outline-none font-bold text-xs ${isDarkMode ? 'bg-slate-800' : 'bg-white'}`} onKeyDown={(e) => {
@@ -553,7 +539,6 @@
                         <div className="fixed inset-0 z-[300] flex items-end sm:items-center justify-center p-0 sm:p-4 bg-slate-950/80 backdrop-blur-sm animate-in fade-in duration-300">
                             <div className={`relative max-w-lg w-full h-[85vh] sm:h-auto sm:max-h-[90vh] rounded-t-[2.5rem] sm:rounded-[2.5rem] p-6 shadow-2xl border flex flex-col ${isDarkMode ? 'bg-[#1e293b] border-slate-700' : 'bg-white border-slate-200'}`}>
                                 <button onClick={() => setViewingSession(null)} className="absolute top-6 right-6 p-2 rounded-full bg-slate-500/10 hover:bg-rose-500/20 hover:text-rose-500 transition-all"><Icon name="x" size={20}/></button>
-                                
                                 <div className="flex items-center gap-4 mb-6 pr-8 text-left">
                                     <div className={`w-12 h-12 flex items-center justify-center rounded-2xl shadow-lg text-white shrink-0 ${viewingSession.entryType === 'expense' ? 'bg-rose-500' : 'bg-teal-600'}`}><Icon name={viewingSession.entryType === 'expense' ? 'receipt' : 'user'} size={24}/></div>
                                     <div className="flex-1 min-w-0">
@@ -561,18 +546,21 @@
                                         <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mt-1">{viewingSession.date}</p>
                                     </div>
                                 </div>
-
-                                <div className="overflow-y-auto flex-1 space-y-6 px-1">
-                                    <div className="grid grid-cols-2 gap-3 text-left text-left">
+                                <div className="overflow-y-auto flex-1 space-y-6 px-1 text-left">
+                                    <div className="grid grid-cols-2 gap-3">
                                         <div className={`p-4 rounded-3xl border ${isDarkMode ? 'bg-slate-800/40 border-slate-700' : 'bg-slate-50 border-slate-100'}`}><p className="text-[8px] font-black text-slate-400 uppercase mb-1">Montant</p><p className={`text-xl font-black ${viewingSession.entryType === 'expense' ? 'text-rose-500' : 'text-teal-600'}`}>{viewingSession.price}€</p></div>
                                         <div className={`p-4 rounded-3xl border ${isDarkMode ? 'bg-slate-800/40 border-slate-700' : 'bg-slate-50 border-slate-100'}`}><p className="text-[8px] font-black text-slate-400 uppercase mb-1">{viewingSession.entryType === 'expense' ? 'Charge' : 'Frais'}</p><p className="text-xl font-black text-rose-400">{viewingSession.entryType === 'expense' ? viewingSession.expenseCategory : `${viewingSession.expenses || 0}€`}</p></div>
                                     </div>
-
-                                    <div className="space-y-3 text-left">
+                                    {viewingSession.entryType !== 'expense' && (
+                                        <div className={`p-4 rounded-3xl border ${isDarkMode ? 'bg-slate-800/40 border-slate-700' : 'bg-slate-50 border-slate-100'}`}>
+                                            <p className="text-[8px] font-black text-slate-400 uppercase mb-1">Contact via</p>
+                                            <p className="text-sm font-black uppercase text-teal-600">{viewingSession.communicationMethod || "Non spécifié"}</p>
+                                        </div>
+                                    )}
+                                    <div className="space-y-3">
                                         <div className="flex items-center gap-3 text-[11px] font-black uppercase text-slate-400 tracking-widest"><Icon name="edit-2" size={12}/> Notes</div>
                                         <div className={`p-5 rounded-3xl text-sm leading-relaxed ${isDarkMode ? 'bg-slate-800/60 text-slate-300' : 'bg-slate-50 text-slate-600 shadow-inner'}`}>{viewingSession.notes || <span className="italic opacity-30">Aucun commentaire.</span>}</div>
                                     </div>
-                                    
                                     <div className="flex flex-col gap-2 pt-4 pb-4">
                                         <button onClick={(e) => startEdit(e, viewingSession)} className="w-full py-4 bg-teal-600 text-white rounded-2xl font-black uppercase text-[10px] tracking-[0.2em] shadow-lg flex items-center justify-center gap-2"><Icon name="edit-3" size={14}/> Modifier l'encodage</button>
                                         <button onClick={() => setViewingSession(null)} className="w-full py-4 bg-slate-100 dark:bg-slate-800 rounded-2xl font-black uppercase text-[10px] tracking-[0.2em]">Fermer</button>
